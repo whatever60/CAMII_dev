@@ -1,6 +1,4 @@
 # system setup
-house_bin: ./bin
-parameters_dir: ./parameters
 
 # image calibration
 calib_gaussian_kernal: [27, 27]
@@ -57,48 +55,4 @@ farthest_points_iteration: 10
 #num_of_colonies: 20
 
 # visualization
-colony_qc_image_spacing: 100
-colony_qc_image_label_size: 2
-colony_qc_image_thickness: 5
-plate_qc_macos_colony_contour_pixel: 2
-plate_qc_macos_image_scale_factor: 0.5
-plate_qc_macos_image_width_bias: 15
-plate_qc_macos_image_height_bias: 120
-plate_qc_macos_confirm_window: [160, 90]
-plate_qc_macos_text_size_large: 20
-plate_qc_macos_text_size_small: 16
-plate_qc_macos_text_size_button: 16
-colony_qc_macos_image_scale_factor: 0.5
-colony_qc_macos_image_width_bias: 15
-colony_qc_macos_image_height_bias: 120
-colony_qc_macos_confirm_window: [285, 90]
-colony_qc_macos_colony_show_bias: 30
-colony_qc_macos_colony_window_bias: 150
-colony_qc_macos_colony_contour_pixel: 2
-colony_qc_macos_colony_label_size: 1
-colony_qc_macos_colony_label_thickness: 2
-colony_qc_macos_text_size_large: 20
-colony_qc_macos_text_size_mid: 18
-colony_qc_macos_text_size_small: 16
-colony_qc_macos_text_size_button: 16
-plate_qc_mswin10_colony_contour_pixel: 2
-plate_qc_mswin10_image_scale_factor: 0.5
-plate_qc_mswin10_image_width_bias: 15
-plate_qc_mswin10_image_height_bias: 125
-plate_qc_mswin10_confirm_window: [160, 100]
-plate_qc_mswin10_text_size_large: 16
-plate_qc_mswin10_text_size_small: 14
-plate_qc_mswin10_text_size_button: 14
-colony_qc_mswin10_image_scale_factor: 0.5
-colony_qc_mswin10_image_width_bias: 15
-colony_qc_mswin10_image_height_bias: 140
-colony_qc_mswin10_confirm_window: [315, 100]
-colony_qc_mswin10_colony_show_bias: 30
-colony_qc_mswin10_colony_window_bias: 195
-colony_qc_mswin10_colony_contour_pixel: 2
-colony_qc_mswin10_colony_label_size: 1
-colony_qc_mswin10_colony_label_thickness: 2
-colony_qc_mswin10_text_size_large: 16
-colony_qc_mswin10_text_size_mid: 15
-colony_qc_mswin10_text_size_small: 14
-colony_qc_mswin10_text_size_button: 14
+plate_qc_colony_contour_pixel: 2

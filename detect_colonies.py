@@ -18,21 +18,29 @@ from skimage.segmentation import random_walker
 from utils import read_config, read_file_list, add_contours
 
 
-def detect_colony(
+def detect_colony_batch(
     input_dir: str, output_dir: str, calib_param_path: str, config_path: str
 ) -> None:
     image_label_list, image_trans_list, image_epi_list = read_file_list(input_dir)
     config = read_config(config_path)
     os.makedirs(output_dir, exist_ok=True)
-    for image_label, image_trans, image_epi in zip(
+    for image_label, image_trans_path, image_epi_path in zip(
         image_label_list, image_trans_list, image_epi_list
     ):
-        (
-            image_trans,
-            image_epi,
-            contours,
-            df,
-        ) = detect_colony_single_image(calib_param_path, image_trans, image_epi, config)
+        image_trans, image_epi = load_corrected_image(
+            config, image_trans_path, image_epi_path, calib_param_path
+        )
+        contours, df = detect_colony(image_trans, config)
+        # add channel stats
+        df = pl.concat(
+            [
+                df,
+                pl.from_dict(
+                    _calc_contour_channel_mean_std(contours, image_trans, image_epi)
+                ),
+            ],
+            how="horizontal",
+        )
         image_trans_pin = add_contours(
             image_trans,
             contours,
@@ -67,38 +75,107 @@ def detect_colony(
         )
 
 
-def detect_colony_single_image(
-    calib_param_path: str,  # path to a npz file
-    image_trans_path: str,
-    image_epi_path: str,
+def detect_colony_single(input_path: str, output_dir: str, config_path: str) -> None:
+    """Colony detection for a single image follows the same logic as batch detection,
+    except that correction is skipped.
+    """
+    # read config, image label, and the image itself.
+    config = read_config(config_path)
+    config["calib_contrast_trans_alpha"] = -1
+    config["calib_contrast_trans_beta"] = 255
+    config["crop_y_min"] = 0
+    config["crop_y_max"] = 744
+    config["crop_x_min"] = 0
+    config["crop_x_max"] = 1164
+    image_label = os.path.basename(input_path).split("_")[0]
+    image_trans, _ = load_corrected_image(config, input_path, None, None)
+    # if len(image_trans.shape) == 3:
+    #     image_trans = cv.cvtColor(image_trans, cv.COLOR_BGR2GRAY)
+    # image_trans = (
+    #     image_trans.astype(np.float32)
+    #     + config["calib_contrast_trans_beta"]
+    # )
+
+    if output_dir is None:
+        output_dir = os.path.dirname(input_path)
+    os.makedirs(output_dir, exist_ok=True)
+
+    contours, df = detect_colony(image_trans, config)
+
+    image_trans_pin = add_contours(
+        image_trans,
+        contours,
+        df[["center_x", "center_y"]].to_numpy(),
+        config["plate_qc_colony_contour_pixel"],
+        config["plate_qc_colony_contour_pixel"],
+    )
+    _modify_output_object_colony_detection(df, image_label, config)
+    contours = [
+        cnt + np.array([config["crop_x_min"], config["crop_y_min"]]) for cnt in contours
+    ]
+    df = df.with_columns(
+        pl.col("center_x") + config["crop_x_min"],
+        pl.col("center_y") + config["crop_y_min"],
+    )
+    _save_outputs_colony_detection(
+        df,
+        contours,
+        image_label,
+        image_trans_pin,
+        image_epi=None,
+        output_dir=output_dir,
+    )
+
+
+def load_corrected_image(
     config: dict,
-) -> tuple[np.ndarray, np.ndarray, list[np.ndarray], list[dict]]:
+    image_trans_path: str = None,
+    image_epi_path: str = None,
+    calib_param_path: str = None,  # path to a npz file
+) -> tuple[np.ndarray, np.ndarray]:
     # load two images and calib data
-    image_trans_raw = cv.imread(image_trans_path, 0).astype(np.float32)
-    image_epi_raw = cv.imread(image_epi_path, cv.IMREAD_COLOR).astype(np.float32)
-    calib_param = np.load(calib_param_path)
+    if calib_param_path is None:
+        calib_param = {"image_trans_calib": 1, "image_epi_calib": 1}
+    else:
+        calib_param = np.load(calib_param_path)
 
     # crop images
     crop_x_min = config["crop_x_min"]
     crop_x_max = config["crop_x_max"]
     crop_y_min = config["crop_y_min"]
     crop_y_max = config["crop_y_max"]
-    image_trans = crop(image_trans_raw, crop_x_min, crop_x_max, crop_y_min, crop_y_max)
-    image_epi = crop(image_epi_raw, crop_x_min, crop_x_max, crop_y_min, crop_y_max)
 
-    # correct images
-    image_trans_corr = (
-        image_trans
-        / calib_param["image_trans_calib"]
-        * config["calib_contrast_trans_alpha"]
-        + config["calib_contrast_trans_beta"]
-    )
-    image_epi_corr = image_epi / calib_param["image_epi_calib"]
+    if image_trans_path is None:
+        image_trans_corr = None
+    else:
+        image_trans_raw = cv.imread(image_trans_path, 0).astype(np.float32)
+        image_trans = crop(
+            image_trans_raw, crop_x_min, crop_x_max, crop_y_min, crop_y_max
+        )
+        image_trans_corr = (
+            image_trans
+            / calib_param["image_trans_calib"]
+            * config["calib_contrast_trans_alpha"]
+            + config["calib_contrast_trans_beta"]
+        )
 
+    if image_epi_path is None:
+        image_epi_corr = None
+    else:
+        image_epi_raw = cv.imread(image_epi_path, cv.IMREAD_COLOR).astype(np.float32)
+        image_epi = crop(image_epi_raw, crop_x_min, crop_x_max, crop_y_min, crop_y_max)
+        image_epi_corr = image_epi / calib_param["image_epi_calib"]
+
+    return image_trans_corr, image_epi_corr
+
+
+def detect_colony(
+    image_trans: np.ndarray, config: dict
+) -> tuple[list[np.ndarray], pl.DataFrame]:
     # remove background
     image_mask_bg = cv.adaptiveThreshold(
         cv.filter2D(
-            image_trans_corr,
+            image_trans,
             -1,
             1.0 / (18 - 8) * np.array([[-1, -1, -1], [-1, 18, -1], [-1, -1, -1]]),
         ).astype(np.uint8),
@@ -111,7 +188,7 @@ def detect_colony_single_image(
 
     # gaussian blur
     image_res_gb = cv.GaussianBlur(
-        src=np.where(image_mask_bg, image_trans_corr, 0),
+        src=np.where(image_mask_bg, image_trans, 0),
         ksize=(5, 5),
         sigmaX=0,
     )
@@ -146,7 +223,7 @@ def detect_colony_single_image(
     )
 
     df_contour = _calc_contours_stats(
-        contours, image_trans_corr, config["segment_bias"] + config["filter_bias"]
+        contours, image_trans, config["segment_bias"] + config["filter_bias"]
     )
     min_dist_pass, min_dist_pin_pass = _check_dist_criteria(
         df_contour[["center_x", "center_y"]].to_numpy(),
@@ -217,13 +294,13 @@ def detect_colony_single_image(
         j
         for cnt, need_pp in zip(contours, df_contour["need_pp"])
         if need_pp
-        for j in postprocess_contour(cnt, image_trans_corr, config)
+        for j in postprocess_contour(cnt, image_trans, config)
     ]
     df_contour = df_contour.filter(pl.col("direct_pass"))
     if contours_pp:
         df_contour_pp = _calc_contours_stats(
             contours_pp,
-            image_trans_corr,
+            image_trans,
             config["segment_bias"] + config["filter_bias"],
         ).with_columns(
             post_pass=pl.col("area").is_between(
@@ -248,7 +325,7 @@ def detect_colony_single_image(
     contours = contours_dp + contours_pp
 
     if not contours:
-        return image_trans_corr, image_epi_corr, contours, df_contour
+        return contours, df_contour
 
     min_dist_pass, min_dist_pin_pass = _check_dist_criteria(
         df_contour[["center_x", "center_y"]].to_numpy(),
@@ -269,21 +346,7 @@ def detect_colony_single_image(
         min_dist_pass=pl.Series(min_dist_pass),
         min_dist_pin_pass=pl.Series(min_dist_pin_pass),
     ).filter(pl.col("min_dist_pass") & pl.col("min_dist_pin_pass"))
-    # add channel stats
-    df_contour = pl.concat(
-        [
-            df_contour,
-            pl.from_dict(
-                _calc_contour_channel_mean_std(
-                    contours, image_trans_corr, image_epi_corr
-                )
-            ),
-        ],
-        how="horizontal",
-    )
-
-    return image_trans_corr, image_epi_corr, contours, df_contour
-
+    return contours, df_contour
 
 
 def _modify_output_object_colony_detection(
@@ -305,7 +368,8 @@ def _save_outputs_colony_detection(
     output_dir: str,
 ) -> None:
     cv.imwrite(f"{output_dir}/{barcode}_image_gray_contour.jpg", image_trans)
-    cv.imwrite(f"{output_dir}/{barcode}_image_contour.jpg", image_epi)
+    if image_epi is not None:
+        cv.imwrite(f"{output_dir}/{barcode}_image_contour.jpg", image_epi)
     df.write_csv(f"{output_dir}/{barcode}_metadata.csv")
     contour_border_coco_dict = _contours_to_coco(contours)
     # contour_border_coco_dict["images"][0] = {
@@ -352,17 +416,24 @@ def _contours_to_coco(contours: list[np.ndarray]) -> dict:
     return data
 
 
+def _coco_to_contours(data: dict) -> list[np.ndarray]:
+    """Convert COCO format to contours."""
+    return [
+        np.array(
+            [
+                [x, y]
+                for x, y in zip(
+                    annotation["segmentation"][0][::2],
+                    annotation["segmentation"][0][1::2],
+                )
+            ]
+        )
+        for annotation in data["annotations"]
+    ]
+
+
 def crop(image, crop_x_min, crop_x_max, crop_y_min, crop_y_max):
     return image[crop_y_min:crop_y_max, crop_x_min:crop_x_max]
-
-
-def _calc_calib_bg(
-    images: np.ndarray, gaussian_kernel: tuple[int, int], gaussian_iteration: int
-) -> np.ndarray:
-    gaussian_input = np.mean(images, axis=0)
-    for _ in range(gaussian_iteration):
-        gaussian_input = cv.GaussianBlur(gaussian_input, gaussian_kernel, 0)
-    return gaussian_input / gaussian_input.mean()
 
 
 @singledispatch
@@ -673,27 +744,57 @@ if __name__ == "__main__":
     # )
 
     parser = argparse.ArgumentParser()
+    subparsers = parser.add_subparsers(dest="subcommand")
 
-    parser = parser.add_parser("detect_colony")
-    parser.add_argument(
+    parser_batch = subparsers.add_parser("batch")
+    parser_batch.add_argument(
+        "-i",
         "--input_dir",
         type=str,
         required=True,
         help="Path to the directory containing input images.",
     )
-    parser.add_argument(
+    parser_batch.add_argument(
+        "-o",
         "--output_dir",
         type=str,
         required=True,
         help="Path to the directory to save output images.",
     )
-    parser.add_argument(
+    parser_batch.add_argument(
+        "-b",
         "--calib_param_path",
         type=str,
         required=True,
         help="Path to the calibration parameter file.",
     )
-    parser.add_argument(
+    parser_batch.add_argument(
+        "-c",
+        "--config_path",
+        type=str,
+        required=True,
+        help="Path to the configuration file.",
+    )
+
+    parser_detect_single = subparsers.add_parser(
+        "single", help="Run colony detection for a single image."
+    )
+    parser_detect_single.add_argument(
+        "-i",
+        "--input_path",
+        type=str,
+        required=True,
+        help="Path to the input image.",
+    )
+    parser_detect_single.add_argument(
+        "-o",
+        "--output_dir",
+        type=str,
+        default=None,
+        help="Path to the directory to save output images.",
+    )
+    parser_detect_single.add_argument(
+        "-c",
         "--config_path",
         type=str,
         required=True,
@@ -701,4 +802,9 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
-    detect_colony(args.input_dir, args.output_dir, args.calib_param_path, args.config_path)
+    if args.subcommand == "batch":
+        detect_colony_batch(
+            args.input_dir, args.output_dir, args.calib_param_path, args.config_path
+        )
+    elif args.subcommand == "single":
+        detect_colony_single(args.input_path, args.output_dir, args.config_path)

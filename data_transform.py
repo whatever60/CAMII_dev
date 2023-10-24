@@ -1,16 +1,18 @@
+#!/usr/bin/env python
 import struct
 import ast
 import numpy as np
 import os
 import argparse
 
+from sklearn.decomposition import PCA
 from PIL import Image
-from cv2 import cv2 as cv
+import cv2 as cv
 from tqdm.auto import trange
 import yaml
 
+from spectral_utils import construct_null_spy_array
 
-# python3 STEP1_translate.py <DATA_CUBE_NAME>
 
 # R_WL, G_WL, B_WL = 700, 550, 450
 R_WL_LOW, R_WL_HIGH, G_WL_LOW, G_WL_HIGH, B_WL_LOW, B_WL_HIGH = (
@@ -104,7 +106,6 @@ def bil2np_old(
     return cube
 
 
-
 def process_bmp(input_dir: str, output_dir: str) -> None:
     """Raw data comes in 32-bit bmp format, with alpha channel all 255. Two images are
     taken for each plate, one with red light from bottom and one with white light from
@@ -130,11 +131,12 @@ def process_bmp(input_dir: str, output_dir: str) -> None:
             cv.imwrite(os.path.join(output_dir, f"{barcode}_rgb_white.png"), image)
         else:  # red light
             cv.imwrite(os.path.join(output_dir, f"{barcode}_rgb_red.png"), image)
-            cv.imwrite(os.path.join(output_dir, f"{barcode}_gray_red.png"), image[..., 2])
+            cv.imwrite(
+                os.path.join(output_dir, f"{barcode}_gray_red.png"), image[..., 2]
+            )
             # image_gray = cv.imread(
             #     os.path.join(output_dir, f"{barcode}_rgb_red.png"), cv.IMREAD_GRAYSCALE
             # )
-
 
 
 if __name__ == "__main__":
@@ -148,19 +150,28 @@ if __name__ == "__main__":
 
     bil2npy_parser = subparsers.add_parser("bil2npy", help="Convert BIL to NPY")
     bil2npy_parser.add_argument("bil_path", type=str, help="name of the data cube file")
-    bil2npy_parser.add_argument("--metadata", type=str, help="name of the metadata file")
+    bil2npy_parser.add_argument(
+        "--metadata", type=str, help="name of the metadata file"
+    )
     bil2npy_parser.add_argument("--output_dir", type=str, default=None)
     bil2npy_parser.add_argument(
         "--config", type=str, default=None, help="configuration string"
     )
 
     npy2jpg_parser = subparsers.add_parser("npy2jpg", help="Convert NPY to JPG")
-    npy2jpg_parser.add_argument("npy_path", type=str, help="path to the NPY file")
-    npy2jpg_parser.add_argument("--output_dir", type=str, default=None)
+    npy2jpg_parser.add_argument(
+        "-i", "--npz_path", type=str, help="path to the NPY file"
+    )
+    npy2jpg_parser.add_argument("-m", "--metadata", type=str, help="metadata file")
+    npy2jpg_parser.add_argument("-o", "--output_dir", type=str, default=None)
 
     process_bmp_parser = subparsers.add_parser("process_bmp", help="Process BMP files")
-    process_bmp_parser.add_argument("input_dir", type=str, help="path to the BMP files")
-    process_bmp_parser.add_argument("output_dir", type=str, help="path to the output dir")
+    process_bmp_parser.add_argument(
+        "-i", "--input_dir", type=str, help="path to the BMP files"
+    )
+    process_bmp_parser.add_argument(
+        "-o", "--output_dir", type=str, help="path to the output dir"
+    )
 
     args = parser.parse_args()
 
@@ -172,7 +183,9 @@ if __name__ == "__main__":
             with open(metadata_file) as f:
                 metadata = yaml.safe_load(f)
         else:
-            raise ValueError("Invalid metadata file, only .bil.hdr and .yaml are supported")
+            raise ValueError(
+                "Invalid metadata file, only .bil.hdr and .yaml are supported"
+            )
         wls = metadata["wavelength"]
         max_samples = metadata["samples"]
         max_lines = metadata["lines"]
@@ -215,13 +228,27 @@ if __name__ == "__main__":
                 )
                 yaml.safe_dump(metadata, f, default_flow_style=None)
         elif args.subcommand == "npy2jpg":
-            npy_path = args.npy_path
-            output_dir = args.output_dir or os.path.dirname(npy_path)
-            image_name = os.path.splitext(os.path.basename(npy_path))[0]
-            arr = np.load(npy_path)["data"]
+            npz_path = args.npz_path
+            output_dir = args.output_dir or os.path.dirname(npz_path)
+            image_name = os.path.splitext(os.path.basename(npz_path))[0]
+            arr = np.load(npz_path)["data"]
+        else:
+            raise NotImplementedError
 
         # do this for both subcommands
+        # save as jpg
         image = np2jpg(arr, wls, ceiling)
-        image.save(os.path.join(output_dir, image_name + ".jpg"))
+        image.save(os.path.join(output_dir, image_name + "_rgb.jpg"))
+
+        # save first 3 PCs as RGB
+        arr_flat = arr.reshape(-1, arr.shape[-1])
+        image_pca = (
+            PCA(n_components=3).fit_transform(arr_flat).reshape(arr.shape[:-1] + (3,))
+        )
+        # normalize the image to [0, 1] by treating 0.005 and 0.995 quantile as 0 and 1
+        q005, q995 = np.quantile(image_pca, [0.005, 0.995])
+        image_pca = ((image_pca - q005) / (q995 - q005)).clip(0, 1)
+        image_pca = Image.fromarray((image_pca * 255).astype(np.uint8))
+        image_pca.save(os.path.join(output_dir, image_name + "_pc3.jpg"))
     elif args.subcommand == "process_bmp":
         process_bmp(args.input_dir, args.output_dir)

@@ -44,8 +44,9 @@ def read_config(config_path: str):
         keys_from.append("_".join(tmp))
     ret = config.copy()
     for key_from, key_to in zip(keys_from, keys_to):
-        ret[key_to] = ret[key_from]
-        del ret[key_from]
+        if key_from in config:
+            ret[key_to] = ret[key_from]
+            del ret[key_from]
     return ret
 
 

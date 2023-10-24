@@ -34,11 +34,20 @@ def main():
         help="Output folder. The folder will be created if not exists",
     )
 
+    parser.add_argument(
+        "-g",
+        "--run_gui_qc",
+        action="store_true",
+        help="Run GUI QC. If not specified, no GUI QC will be run and all plates and "
+            "colonies will pass qc",
+    )
+
     args = parser.parse_args()
 
     configure_path = args.config
     input_dir = args.input
     output_dir = args.output
+    run_gui_qc = args.run_gui_qc
 
     configure_pool = ipf.readConfigureFile(configure_path)
     ipf.modifyOSconfigure(configure_pool)
@@ -74,6 +83,7 @@ def main():
             globalOutput.all_metadata[i],
             globalOutput.image_label[i],
             configure_pool,
+            run_gui_qc=run_gui_qc,
         )
         globalOutput.plateQC_flag[i] = tmpFlag
 

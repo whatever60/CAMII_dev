@@ -11,8 +11,6 @@ import cv2 as cv
 from tqdm.auto import trange
 import yaml
 
-from spectral_utils import construct_null_spy_array
-
 
 # R_WL, G_WL, B_WL = 700, 550, 450
 R_WL_LOW, R_WL_HIGH, G_WL_LOW, G_WL_HIGH, B_WL_LOW, B_WL_HIGH = (

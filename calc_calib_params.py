@@ -1,21 +1,11 @@
 #!/usr/bin/env python
 
 import argparse
-import os
-import json
-from functools import singledispatch
 
 import numpy as np
-from scipy import ndimage
-from scipy.spatial import KDTree
-import pandas as pd
-import polars as pl
 import cv2 as cv
-from skimage import morphology
-from skimage.feature import peak_local_max
-from skimage.segmentation import random_walker
 
-from utils import read_config, read_file_list, add_contours
+from utils import read_config, read_file_list
 
 
 def calib(input_dir: str, output_path: str, config_path: str) -> None:

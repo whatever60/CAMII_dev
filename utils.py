@@ -1,10 +1,10 @@
 import sys
 import os
 from collections import defaultdict
+import yaml
 
 import numpy as np
 import cv2 as cv
-import yaml
 
 
 def read_config(config_path: str):

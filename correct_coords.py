@@ -1,4 +1,6 @@
 #!/usr/bin/env python
+
+import argparse
 import os
 import json
 
@@ -35,7 +37,12 @@ def coordinate_correction(input_dir, parameter_path: str):
 
 
 if __name__ == "__main__":
-    coordinate_correction(
-        "test_data/output_03",
-        "test_data/parameters/correction_params.json",
-    )
+    # coordinate_correction(
+    #     "test_data/output_03",
+    #     "test_data/parameters/correction_params.json",
+    # )
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-i", "--input_dir", type=str, help="path to the input dir")
+    parser.add_argument("-p", "--parameter_path", type=str, help="path to the parameter file")
+    args = parser.parse_args()
+    coordinate_correction(args.input_dir, args.parameter_path)

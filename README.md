@@ -1,228 +1,151 @@
-# Automated and Machine Learning Guided Culturomics of Personalized Gut Microbiomes
+# Computational pipeline for Culturomics by Automated Microbiome Imaging and Isolation (CAMII)
 
-Tools for plate image analysis and morphology-guided colony selection (Examples can be found in ./example)
+This repo is based on the [original CAMII pipeline](https://github.com/hym0405/CAMII), and where future development will take place. As of version 1.1, no major functionality is added, but speed is improved more than 10x by significant code refactoring.
 
-We have tested these scripts on Linux and MacOS.
-
-* **01.colony_detection.py**: Script of raw image analysis, including colony contour detection, segmentation and features extraction.
-
-* **02.optimize_colony_picking.py**: Script of morphology-guided colony selection and manual inspection for optimized strain isolation.
+Future plans include incorporation of hyperspectral images for diversity-optimized picking, image-to-taxonomy models, and end-to-end segmentation and classification.
 
 ## Dependencies
 
-* Python 2.7:
-	- panda, numpy, scipy, sklearn, skimage, datetime, functools, pickle (_These libraries are bundled together in the [Anaconda distribution](https://www.anaconda.com/distribution)_)
-	- Tkinter: Tk GUI toolkit
-	- cv2: opencv library
-	- PIL: python image library
+* The program runs on Python 3 and is tested with 3.10, thrid-party packages are:
+	- numpy, scipy, pandas, polars, scikit-learn, scikit-image, scikit-bio, matplotlib, seaborn
+  - opencv-python, pillow
+  - python-tsp
 
-* R 4.1.0:
- 	- **Required for colony ordination visualization only**
- 	- ggplot2
- 	- reshape
+  All packages should be easily installed with pip.
 
-## Colony contour detection, segmentation and features extraction from raw plate images
+## Pipeline description
 
-### Description
-```
-usage: 01.colony_detection.py [-h] [-c CONFIG] [-i INPUT] [-o OUTPUT]
+### Step 0: Prepare your data
 
-Program of colony contour detection and segmentation.
+#### Images
 
-optional arguments:
-  -h, --help            show this help message and exit
-  -c CONFIG, --config CONFIG
-                        Configure file of parameters for general colony
-                        segmentation and filtering
-  -i INPUT, --input INPUT
-                        Input folder containing raw images of plates, both
-                        trans-illuminated and epi-illuminated. A file named
-                        "image_processed.txt" will be written to the folder
-                        after processing
-  -o OUTPUT, --output OUTPUT
-                        Output folder. The folder will be created if not
-                        exists
-```
-### Input format
-****[Important]**** Avoid underline in sample name or plate barcode
+In the current setup, the camera in our robot system takes images of rectanguar culture plates under two light conditions: red light from bottom and white light along the upper edge of the plate. Images are output in `.bmp` format. Put these image pairs in one directory.
 
+Make sure that:
+- File names end with `.bmp` and the string before the first `_` is plate name or barcode.
+- there are two and only two images for each plate, and the image under red light comes before the image under white light when sorted by file name. This is likely the case since this is the order in which the robot takes pictures.
 
-**Input folder:** trans-illuminated images and epi-illuminated images in BMP format. Files are named as \[plate\_barcode\]\_\[imaging_time\].bmp and trans-illuminated images were imaged first so \[imaging_time\] is earlier than epi-illuminated images. 
+You can find in this repo pre-computed calibration parameters at `./test_data/parameters/calib_parameter.npz`.
 
-****[example: ./example/raw_plate_images]****
+To proceed, convert the `.bmp` images into `.png` format with
 
-
-**Configure file:** files containing all parameters used in colony contour detection and segmentation. 
-
-****[example: ./configure]****
-
-```
-# system setup
-house_bin=./bin
-parameters_dir=./parameters
-
-# image calibration
-calib_gaussian_kernal=(27,27)
-calib_gaussian_iteration=20
-calib_parameter_PATH=./parameters/calib_parameter.npz
-calib_contrast_trans_alpha=5
-calib_contrast_trans_beta=-100
-calib_contrast_trans_beta=-70
-
-# image crop
-cropYMin=150
-cropYMax=1150
-cropXMin=150
-cropXMax=1750
-...
+```shell
+./data_transform.py process_bmp -i <input_dir> -o <output_dir>
 ```
 
-### Output format
-****Contours, metadata and visualization of all detected colonies will be saved in output folder:****
+Images in the output directory will come in groups of 3:
+- `<barcode>_gs_red.png`, the picture taken with red light in grayscale.
+- `<barcode>_rgb_red.png`, the picture taken with red light.
+- `<barcode>_rgb_white.png`, the picture taken with white light.
 
-* **\[plate\_barcode\]\_Contours\_all.npy:** Contours of colonies on plate saved in Python pickle object.
-* **\[plate\_barcode\]\_Metadata\_all.csv:** Metadata of colonies on plate in CSV format, including coordinates and morphological features.
-* **\[plate\_barcode\]\_Image\_colony_trans.jpg:** Image of plate with all colonies labeled in JPEG format.
-* **colonyDetection.\[processing_time\].merge.obj:** Python object containing all related images and colonies data. This file will be used as input for downstream optimized colony selection.
+We only convert the red light images to grayscale and this is what we use for colony detection.
 
-****[Important]**** A file named image_processed.txt will be written to input folder to indicate images in this folder have been processed. Please delete the file if you want to rerun the colony detection for images in that folder
+#### Plate metadata
 
-****[example: ./example/output_colony_detection]****
+Prepare a csv file with these columns for each plate:
 
-**\[plate\_barcode\]\_Metadata\_all.csv:**
-```
-,X,Y,Area,Perimeter,Radius,Circularity,Convexity,...
-0,373,940,139.0,46.142,7.245,0.820,0.958,...
-1,1490,936,119.5,42.727,6.082,0.822,0.959,...
-2,1027,929,52.0,27.656,4.472,0.854,0.981,...
-...
-```
+`barcode, group, num_picks_group, num_picks_plate`
 
-### Manual inspection
-****After image processing, you could check detected colonies on each plates and determine whether you want to keep specific plates for colony picking in following GUI:****
+This is useful for picking a given number of colonies from a group of plates while limiting the number of colonies picked from each individual plate.
 
-<p align="center">
-  <img src="https://github.com/hym0405/CAMII/blob/main/misc/check_colony_detection.png" width="500" title="hover text">
-</p>
+#### Config file
 
-### Example of usage
-```
-python2 ./01.colony_detection.py -c ./configure \
-		-i ./example/raw_plate_images \
-		-o ./example/output_colony_detection
+A `.yaml` file specifying arguments for the pipeline.
+
+#### Calibration parameter
+
+Based on a reference panel of CAMII pictures, we calculate calibration parameters to account for non-uniform illumination and other artifacts. In the current implmentation, we simply do this by dividing the average value of each pixel by the average over the entire image. Input images in the subsequent steps are then divided by these calibration parameters, so that pixels that typically have extreme values are brought closer to the mean, i.e., background is removed.
+
+```shell
+./calc_calib_params.py -i <input_dir_with> -o <output_dir> -c <config_file>
 ```
 
+#### Picking coordinate correction parameter:
+
+The robot migh not picking where we want, due to lens distortion and other systematic error. We can fit a linear model to correct for this. In current implementation the corrected picking coordinates (`x'` and `y'`) are fitted by:
+- `x' = x - (ax2 * x^2 + ax1 * x + axy * y + bx)`
+- `y' = y - (ay2 * y^2 + ay1 * y + ayx * x + by)`
+
+where `x` and `y` on the right of the equal sign are the picking coordinates output by the last step, `ax2, ax1, axy, bx, ay2, ay1, ayx, by` are fitted parameters.
+
+Fitting such a model would require actually experimenting with the robot, but a `.json` file with pre-computed model parameters is provided in `./test_data/parameters/correction_params.json`.
+
+### Step 1: Colony detection
+
+Microbial colonies are detected by the canonical pipeline of image processing: background subtraction, thresholding, contour detection, and contour filtering.
 
 
-
-
-
-
-## Morphology-guided colony selection for optimized strain isolation
-
-### Description
-```
-usage: 02.optimize_colony_picking.py [-h] [-c CONFIG] [-m METADATA] [-i INPUT]
-                                     [-o OUTPUT]
-
-Program of morphology-guided colony selection for isolation.
-
-optional arguments:
-  -h, --help            show this help message and exit
-  -c CONFIG, --config CONFIG
-                        Configure file of parameters for general colony
-                        segmentation and filtering
-  -m METADATA, --metadata METADATA
-                        Metadata of plates for optimized colony isolation
-  -i INPUT, --input INPUT
-                        colonyDetection.*.merge.obj file in the output folder
-                        of "01.colony_detection.py"
-  -o OUTPUT, --output OUTPUT
-                        Output folder. The folder will be created if not
-                        exists
+```shell
+./detect_colonies.py batch -i <input_path> -o <output_dir> -b <calibration_parameter_npz> -c <config_file>
 ```
 
-### Input format
-****[Important]**** Avoid underline in sample name or plate barcode
+When input path is a `.png` image, colony detection is performed for this single image, and in the output directory, these output will be generated:
+- `<barcode>_annot.json`, colony segmentation in coco format.
+- `<barcode>_image_contour.jpg`, segmentation contours overlaid on the white light image.
+- `<barcode>_image_gray_contour.jpg`, segmentation contours overlaid on the red light image in grayscale.
+- `<barcode>_metadata.csv`, metadata for each contour (i.e., putative colony).
 
-**Configure file:** files containing all parameters used in colony contour detection and segmentation. 
+When input path is a directory, colony detection is performed for all `.png` images in the directory, and the same list of output files will be generated for each image in the directory.
 
-****[example: ./configure]****
+### Step 2: Colony selection (intial round)
 
-```
-# system setup
-house_bin=./bin
-parameters_dir=./parameters
+A subset of all detected colonies will be selected for picking, under constraint set in the plate metadata. We start by selecting `num_picks_group` colonies (in the metadata) from each group using farthest point algorithm. This algorithms randomly choose `num_picks_group` colonies and iteratively refine this set until convergence by replacing a colony the current set by a colony that is farthest away from the current set. When doing replacement, the number of colonies selected for each plate is recorded to not exceed the `num_picks_plate` (in the metadata) limit for each plate.
 
-# image calibration
-calib_gaussian_kernal=(27,27)
-calib_gaussian_iteration=20
-calib_parameter_PATH=./parameters/calib_parameter.npz
-calib_contrast_trans_alpha=5
-calib_contrast_trans_beta=-100
-calib_contrast_trans_beta=-70
-
-# image crop
-cropYMin=150
-cropYMax=1150
-cropXMin=150
-cropXMax=1750
-...
+```shell
+./select_colonies.py init -p <directory_with_png_images> -i <directory_with_segmentations> -o <output_dir> -d <path_to_metadata> -c <path_to_config>
 ```
 
-**Metadata of plates for optimized colony selection:** information of plates, including plate barcodes, sample names and # of colonies to pick for each set of plates
+In the output directory, these output will be generated for each plate:
+- `<barcode>_annot_init.json`, colony segmentation (after initial selectio) in coco format.
+- `<barcode>_metadata_init.json`, metadata for each selected contour (i.e., putative colony).
+- `<barcode>_gray_contour_init.jpg`, segmentation contours (after initial selection) overlaid on the red light image in grayscale.
 
-****[example: ./example/sample_metadata.csv]****: This file indicates colonies on plate H2M1, H2M2, H2M3 will be considered together (as a group) for optimized selection and 32 colonies will be selected by the algorithm.
+### Step 3: Manual inspection
 
-```
-barcode,sampleID,plateTyte,plateID,groupID,numGroupPick
-H2M1,H2,mGAM,H2,H2mGAM20200126,32
-H2M2,H2,mGAM,H2,H2mGAM20200126,32
-H2M3,H2,mGAM,H2,H2mGAM20200126,32
-```
+In this step you need to remove unwanted colonies selected in the first step yourself. I suggest quick online tool [makesense.ai](https://www.makesense.ai/) or [Darwin V7 Lab](https://darwin.v7labs.com/) since you could import and export coco annotations.
 
-**Input colony detection file:** python object file generated by 01.colony_detection.py: ****colonyDetection.\[processing_time\].merge.obj****
+After manual twicking, output segmentation in coco format into the same output directory and name it as `<barcode>_annot_init_post.json`.
 
+### Step 4: Colony selection (post round)
 
-### Output format
+After a few colonies are labeled as bad colonies, the constraints set in the metadata are no longer satisfied. In this step we run a simpler fartherst point algorithm to make up for the lost colonies.
 
-****Metadata, coordinates and visualization of colonies to pick will be saved in output folder:****
-
-* **\[plate\_barcode\]\_Contours\_all.npy:** Contours of all colonies on plate saved in Python pickle object.
-* **\[plate\_barcode\]\_Metadata\_all.csv:** Metadata of all colonies on plate in CSV format, including coordinates and morphological features. Colonies will be labeled as "pick", "not_pick" and "bad_pick".
-* **\[plate\_barcode\]\_Image\_colony_trans.jpg:** Image of plate with all colonies labeled in JPEG format.
-* **\[plate\_barcode\]\_Image\_colony_\[trans or epi\]\_pick.jpg:** Trans- or Ep-illuminated images of plate with colonies to pick highlighted in JPEG format.
-* **PCAdata.csv:** PCA ordination of colonies based on their morphological features
-* **PCAdata.pickStatus.pdf:** visualization of colonies picking in PCA ordination
-* **PCAdata.plateBarcode.pdf:** visualization of colonies on different plates in PCA ordination
-* **pickingOptimization.\[processing_time\].merge.obj:** Python object containing all related images and colonies data.
-
-****[example: ./example/output_optimized_picking]****
-
-
-### Example
-```
-python2 02.optimize_colony_picking.py -c configure \
-		-m ./example/sample_metadata.csv \
-		-i ./example/output_colony_detection/colonyDetection.20210809_112425_368541.merge.obj \
-		-o output_optimized_picking
+```shell
+./select_colonies.py post -p <directory_with_png_images> -i <input_dir> -d <path_to_metadata> -s init
 ```
 
-### Manual inspection
-****After image processing, you could check selected colonies on each plates and determine whether these colonies are good enough for picking in following GUI:****
+In the output directory, these output will be generated for each plate:
+- `<barcode>_annot_final.json`, colony segmentation (after post selection) in coco format.
+- `<barcode>_metadata_final.json`, metadata for each selected contour (i.e., putative colony).
+- `<barcode>_gray_contour_final.jpg`, segmentation contours (after post selection) overlaid on the red light image in grayscale.
 
-<p align="center">
-  <img src="https://github.com/hym0405/CAMII/blob/main/misc/check_optimize_colony_picking1.png" width="427" title="hover text">
-</p>
+### Step 5: Go back and forth
 
-You could check selected colonies on plates or individually and also remove colonies that are (1) artifacts or (2) failed to be segemented by selecting them and click Re-pick
-
-<p align="center">
- <img src="https://github.com/hym0405/CAMII/blob/main/misc/check_optimize_colony_picking2.png" width="427" title="hover text">
-</p>
+If you want you can go back to graphical user interface again to exclude bad colonies. If you do this, store modifed segmentation annotation as `<barcode>_annot_final_post.json` in the output directory and run the post selection step again (but make sure to specify `-s final` and the output from the last step will be overwritten).
 
 
+### Step 6: Finalize colony selection
 
-## Reference
+After you are good with the colony selection on each plate, finalize the selection by generating a few vislization and run Travelling Salesman Problem (TSP) to find the optimal pick order that minimizes robot movement.
 
-Huang, Y., Sheth U. R., Zhao, S., Cohen, L., Dabaghi, K., Moody, T., Sun Y., Ricaurte D., Richardson M., Velez-Cortes F., Blazejewski T., Kaufman A., Ronda C., and Wang H. H., High-throughput microbial culturomics using automation and machine learning. GitHub. https://github.com/hym0405/CAMII (2023).
+```shell
+./finalize_colony_selection.py -p <directory_with_png_images> -i <input_dir_with_results_from_last_step> -o <output_dir> -d <path_to_metadata> -t [heuristic|exact]
+```
+
+In the output directory, these output will be generated for each plate:
+- `<barcode>_gray_contour.jpg`, segmentation contours overlaid on the red light image in grayscale.
+- `<barcode>_metadata.json`, metadata for each selected contour (i.e., putative colony).
+- `<barcode>_picking.json`, picking coordinates of selected colonies in CSV format, first column is x coordinate and second column is y coordinate.
+- `<barcode>_rgb_red_contour.jpg`, segmentation contours overlaid on the red light image.
+- `<barcode>_rgb_white_contour.jpg`, segmentation contours overlaid on the white light image.
+
+Just note that exact TSP optimization might take forever if you have hundreds of colonies to in a plate.
+
+### Step 7 (final step, well done): Coordinate correction
+
+```shell
+./correct_coords.py -i <input_dir_with_picking_json_from_last_step> -p <correction_parameter_json>
+```
+
+In the directory, we do correction for coordinates in all `*_picking.json` files and store corrected coordiantes as `<barcode>_Coordinates.csv`, named like this because of the requirement by the colony picking robot.
+

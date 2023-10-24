@@ -28,7 +28,6 @@ import argparse
 import os
 from itertools import cycle
 from functools import singledispatch
-from collections import Counter
 import json
 
 import numpy as np
@@ -46,7 +45,6 @@ from python_tsp.exact import solve_tsp_dynamic_programming
 from python_tsp.heuristics import solve_tsp_local_search, solve_tsp_simulated_annealing
 import matplotlib.pyplot as plt
 import seaborn as sns
-from tqdm.auto import trange
 
 from utils import read_config, add_contours
 
@@ -684,15 +682,15 @@ def pick_colony_final(
             )
             image_gray_contours = _add_contours(image_gray, contours, ps, centers)
             cv.imwrite(
-                os.path.join(output_dir, f"{b}_rgb_red_contour.png"),
+                os.path.join(output_dir, f"{b}_rgb_red_contour.jpg"),
                 image_rgb_red_contours,
             )
             cv.imwrite(
-                os.path.join(output_dir, f"{b}_rgb_white_contour.png"),
+                os.path.join(output_dir, f"{b}_rgb_white_contour.jpg"),
                 image_rgb_white_contours,
             )
             cv.imwrite(
-                os.path.join(output_dir, f"{b}_gray_contour.png"),
+                os.path.join(output_dir, f"{b}_gray_contour.jpg"),
                 image_gray_contours,
             )
 
@@ -744,6 +742,8 @@ def _tsp(data: np.ndarray, tsp_method: str = "heuristic") -> np.ndarray:
         )
     elif tsp_method == "exact":
         permutation2, distance2 = solve_tsp_dynamic_programming(dm)
+    else:
+        raise ValueError(f"Invalid tsp_method {tsp_method}.")
     return np.array(permutation2)
 
 
@@ -775,24 +775,93 @@ if __name__ == "__main__":
     subparsers = parser.add_subparsers(dest="command")
 
     parser_init = subparsers.add_parser("init")
-    parser_init.add_argument("-p","--image_dir", required=True, type=str, help="path to the directory containing the images")
-    parser_init.add_argument("-i", "--input_dir", required=True, type=str, help="path to the input directory")
-    parser_init.add_argument("-o", "--output_dir", required=True, type=str, help="path to the output directory")
-    parser_init.add_argument("-d", "--metadata_path", required=True, type=str, help="path to the metadata file")
-    parser_init.add_argument("-c", "--config_path", required=True, type=str, help="path to the configure file")
+    parser_init.add_argument(
+        "-p",
+        "--image_dir",
+        required=True,
+        type=str,
+        help="path to the directory containing the images",
+    )
+    parser_init.add_argument(
+        "-i", "--input_dir", required=True, type=str, help="path to the input directory"
+    )
+    parser_init.add_argument(
+        "-o",
+        "--output_dir",
+        required=True,
+        type=str,
+        help="path to the output directory",
+    )
+    parser_init.add_argument(
+        "-d",
+        "--metadata_path",
+        required=True,
+        type=str,
+        help="path to the metadata file",
+    )
+    parser_init.add_argument(
+        "-c",
+        "--config_path",
+        required=True,
+        type=str,
+        help="path to the configure file",
+    )
 
     parser_post = subparsers.add_parser("post")
-    parser_post.add_argument("-p","--image_dir", required=True, type=str, help="path to the directory containing the images")
-    parser_post.add_argument("-i", "--input_dir", required=True, type=str, help="path to the input directory")
-    parser_post.add_argument("-d", "--metadata_path", required=True, type=str, help="path to the metadata file")
-    parser_post.add_argument("-s", "--start_from", required=True, type=str, help="start from init or final")
+    parser_post.add_argument(
+        "-p",
+        "--image_dir",
+        required=True,
+        type=str,
+        help="path to the directory containing the images",
+    )
+    parser_post.add_argument(
+        "-i", "--input_dir", required=True, type=str, help="path to the input directory"
+    )
+    parser_post.add_argument(
+        "-d",
+        "--metadata_path",
+        required=True,
+        type=str,
+        help="path to the metadata file",
+    )
+    parser_post.add_argument(
+        "-s",
+        "--start_from",
+        required=True,
+        type=str,
+        help="start from init or final",
+        choices=["init", "final"],
+    )
 
     parser_final = subparsers.add_parser("final")
-    parser_final.add_argument("-p","--image_dir", required=True, type=str, help="path to the directory containing the images")
-    parser_final.add_argument("-i", "--input_dir", required=True, type=str, help="path to the input directory")
-    parser_final.add_argument("-o", "--output_dir", required=True, type=str, help="path to the output directory")
-    parser_final.add_argument("-d", "--metadata_path", required=True, type=str, help="path to the metadata file")
-    parser_final.add_argument("-t", "--tsp_method", required=True, type=str, help="tsp method")
+    parser_final.add_argument(
+        "-p",
+        "--image_dir",
+        required=True,
+        type=str,
+        help="path to the directory containing the images",
+    )
+    parser_final.add_argument(
+        "-i", "--input_dir", required=True, type=str, help="path to the input directory"
+    )
+    parser_final.add_argument(
+        "-o",
+        "--output_dir",
+        required=True,
+        type=str,
+        help="path to the output directory",
+    )
+    parser_final.add_argument(
+        "-d",
+        "--metadata_path",
+        required=True,
+        type=str,
+        help="path to the metadata file",
+    )
+    parser_final.add_argument(
+        "-t", "--tsp_method", required=True, type=str, help="tsp method"
+    )
 
     args = parser.parse_args()
 
@@ -819,4 +888,3 @@ if __name__ == "__main__":
             output_dir=args.output_dir,
             tsp_method=args.tsp_method,
         )
-

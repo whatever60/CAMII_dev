@@ -75,7 +75,9 @@ def detect_colony_batch(
         )
 
 
-def detect_colony_single(input_path: str, output_dir: str, config_path: str) -> None:
+def detect_colony_single(
+    input_path: str, output_dir: str, calib_param_path: str, config_path: str
+) -> None:
     """Colony detection for a single image follows the same logic as batch detection,
     except that correction is skipped.
     """
@@ -88,7 +90,9 @@ def detect_colony_single(input_path: str, output_dir: str, config_path: str) -> 
     config["crop_x_min"] = 0
     config["crop_x_max"] = 1164
     image_label = os.path.basename(input_path).split("_")[0]
-    image_trans, _ = load_corrected_image(config, input_path, None, None)
+    image_trans, _ = load_corrected_image(
+        config, input_path, None, calib_param_path=calib_param_path
+    )
     # if len(image_trans.shape) == 3:
     #     image_trans = cv.cvtColor(image_trans, cv.COLOR_BGR2GRAY)
     # image_trans = (
@@ -744,56 +748,29 @@ if __name__ == "__main__":
     # )
 
     parser = argparse.ArgumentParser()
-    subparsers = parser.add_subparsers(dest="subcommand")
 
-    parser_batch = subparsers.add_parser("batch")
-    parser_batch.add_argument(
+    parser.add_argument(
         "-i",
-        "--input_dir",
+        "--input_path",
         type=str,
         required=True,
         help="Path to the directory containing input images.",
     )
-    parser_batch.add_argument(
+    parser.add_argument(
         "-o",
         "--output_dir",
         type=str,
         required=True,
         help="Path to the directory to save output images.",
     )
-    parser_batch.add_argument(
+    parser.add_argument(
         "-b",
         "--calib_param_path",
         type=str,
         required=True,
         help="Path to the calibration parameter file.",
     )
-    parser_batch.add_argument(
-        "-c",
-        "--config_path",
-        type=str,
-        required=True,
-        help="Path to the configuration file.",
-    )
-
-    parser_detect_single = subparsers.add_parser(
-        "single", help="Run colony detection for a single image."
-    )
-    parser_detect_single.add_argument(
-        "-i",
-        "--input_path",
-        type=str,
-        required=True,
-        help="Path to the input image.",
-    )
-    parser_detect_single.add_argument(
-        "-o",
-        "--output_dir",
-        type=str,
-        default=None,
-        help="Path to the directory to save output images.",
-    )
-    parser_detect_single.add_argument(
+    parser.add_argument(
         "-c",
         "--config_path",
         type=str,
@@ -802,9 +779,9 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
-    if args.subcommand == "batch":
+    if os.path.isdir(args.input_path):
         detect_colony_batch(
-            args.input_dir, args.output_dir, args.calib_param_path, args.config_path
+            args.input_path, args.output_dir, args.calib_param_path, args.config_path
         )
-    elif args.subcommand == "single":
+    else:
         detect_colony_single(args.input_path, args.output_dir, args.config_path)

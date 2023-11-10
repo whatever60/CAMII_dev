@@ -394,7 +394,7 @@ def _save_outputs_colony_detection(
     #     "height": image_trans.shape[0] + config["crop_y_min"],
     #     "file_name": None,
     # }
-    contour_border_coco_dict["images"][0]["file_name"] = f"{barcode}_gs_red.png"
+    contour_border_coco_dict["images"][0]["file_name"] = f"{barcode}_rgb_white.png"
     with open(f"{output_dir}/{barcode}_annot.json", "w") as f:
         json.dump(contour_border_coco_dict, f)
 

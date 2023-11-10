@@ -1,4 +1,5 @@
 import sys
+import glob
 import os
 from collections import defaultdict
 import yaml
@@ -65,15 +66,13 @@ def read_file_list(input_dir: str) -> tuple[list[str], list[str], list[str]]:
     image_label_list = []
     image_trans_list = []
     image_epi_list = []
-    for i, image in enumerate(
-        sorted(f for f in os.listdir(input_dir) if f.endswith(".png"))
-    ):
-        barcode = os.path.splitext(image)[0].split("_")[0]
-        if i % 3 == 1:  # red light rgb image
+    for i, image in enumerate(sorted(glob.glob(os.path.join(input_dir, "*.png")))):
+        barcode = os.path.splitext(os.path.basename(image))[0].split("_")[0]
+        if i % 4 == 2:  # red light rgb image
             image_label_list.append(barcode)
-            image_trans_list.append(os.path.join(input_dir, image))
-        elif i % 3 == 2:  # white light rgb image
-            image_epi_list.append(os.path.join(input_dir, image))
+            image_trans_list.append(image)
+        elif i % 4 == 3:  # white light rgb image
+            image_epi_list.append(image)
     return image_label_list, image_trans_list, image_epi_list
 
 

@@ -19,7 +19,11 @@ from utils import read_config, read_file_list, add_contours
 
 
 def detect_colony_batch(
-    input_dir: str, output_dir: str, calib_param_path: str, config_path: str
+    input_dir: str,
+    output_dir: str,
+    calib_param_path: str,
+    config_path: str,
+    toss_red: bool = False,
 ) -> None:
     image_label_list, image_trans_list, image_epi_list = read_file_list(input_dir)
     config = read_config(config_path)
@@ -28,7 +32,7 @@ def detect_colony_batch(
         image_label_list, image_trans_list, image_epi_list
     ):
         image_trans, image_epi = load_corrected_image(
-            config, image_trans_path, image_epi_path, calib_param_path
+            config, image_trans_path, image_epi_path, calib_param_path, toss_red
         )
         contours, df = detect_colony(image_trans, config)
         # add channel stats
@@ -136,6 +140,7 @@ def load_corrected_image(
     image_trans_path: str = None,
     image_epi_path: str = None,
     calib_param_path: str = None,  # path to a npz file
+    toss_red: bool = False,
 ) -> tuple[np.ndarray, np.ndarray]:
     # load two images and calib data
     if calib_param_path is None:
@@ -170,6 +175,13 @@ def load_corrected_image(
         image_epi = crop(image_epi_raw, crop_x_min, crop_x_max, crop_y_min, crop_y_max)
         image_epi_corr = image_epi / calib_param["image_epi_calib"]
 
+    if toss_red:
+        image_trans_corr = cv.cvtColor(image_epi_corr, cv.COLOR_BGR2GRAY)
+        image_trans_corr = image_trans_corr.max() - image_trans_corr
+        image_trans_corr = (
+            image_trans_corr * config["calib_contrast_trans_alpha"]
+            + config["calib_contrast_trans_beta"]
+        )
     return image_trans_corr, image_epi_corr
 
 
@@ -371,9 +383,9 @@ def _save_outputs_colony_detection(
     image_epi: np.ndarray,
     output_dir: str,
 ) -> None:
-    cv.imwrite(f"{output_dir}/{barcode}_image_gray_contour.jpg", image_trans)
+    cv.imwrite(f"{output_dir}/{barcode}_gs_red_contour.jpg", image_trans)
     if image_epi is not None:
-        cv.imwrite(f"{output_dir}/{barcode}_image_contour.jpg", image_epi)
+        cv.imwrite(f"{output_dir}/{barcode}_rgb_white_contour.jpg", image_epi)
     df.write_csv(f"{output_dir}/{barcode}_metadata.csv")
     contour_border_coco_dict = _contours_to_coco(contours)
     # contour_border_coco_dict["images"][0] = {
@@ -767,7 +779,6 @@ if __name__ == "__main__":
         "-b",
         "--calib_param_path",
         type=str,
-        required=True,
         help="Path to the calibration parameter file.",
     )
     parser.add_argument(
@@ -777,11 +788,21 @@ if __name__ == "__main__":
         required=True,
         help="Path to the configuration file.",
     )
+    parser.add_argument("--toss_red", action="store_true", help="Toss the red channel.")
 
     args = parser.parse_args()
     if os.path.isdir(args.input_path):
         detect_colony_batch(
-            args.input_path, args.output_dir, args.calib_param_path, args.config_path
+            args.input_path,
+            args.output_dir,
+            args.calib_param_path,
+            args.config_path,
+            toss_red=args.toss_red,
         )
     else:
-        detect_colony_single(args.input_path, args.output_dir, args.config_path)
+        detect_colony_single(
+            args.input_path,
+            args.output_dir,
+            calib_param_path=None,
+            config_path=args.config_path,
+        )

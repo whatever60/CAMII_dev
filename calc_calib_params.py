@@ -63,7 +63,6 @@ def _calc_calib_bg(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser = parser.add_subparsers(dest="command")
 
     parser.add_argument(
         "--input_dir",

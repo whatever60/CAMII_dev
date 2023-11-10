@@ -6,12 +6,17 @@ Future plans include incorporation of hyperspectral images for diversity-optimiz
 
 ## Dependencies
 
-* The program runs on Python 3 and is tested with 3.10, thrid-party packages are:
-	- numpy, scipy, pandas, polars, scikit-learn, scikit-image, scikit-bio, matplotlib, seaborn
-  - opencv-python, pillow
-  - python-tsp
+The program runs on Python 3 and is tested with 3.10, third-party packages are:
+- NumPy, SciPy, pandas, Polars, scikit-learn, scikit-image, scikit-bio, Matplotlib, seaborn
+- opencv-python, Pillow
+- python-tsp
+- PyYAML, tqdm
 
-  All packages should be easily installed with pip.
+All packages should be easily installed with pip.
+
+```shell
+pip3 install numpy scipy pandas polars scikit-learn scikit-image scikit-bio matplotlib seaborn opencv-python pillow python-tsp pyyaml tqdm
+```
 
 ## Pipeline description
 
@@ -23,9 +28,7 @@ In the current setup, the camera in our robot system takes images of rectanguar 
 
 Make sure that:
 - File names end with `.bmp` and the string before the first `_` is plate name or barcode.
-- there are two and only two images for each plate, and the image under red light comes before the image under white light when sorted by file name. This is likely the case since this is the order in which the robot takes pictures.
-
-You can find in this repo pre-computed calibration parameters at `./test_data/parameters/calib_parameter.npz`.
+- There are two and only two images for each plate, and the image under red light comes before the image under white light when sorted by file name. This is likely already the case since this is the order in which the robot takes pictures.
 
 To proceed, convert the `.bmp` images into `.png` format with
 
@@ -44,7 +47,7 @@ We only convert the red light images to grayscale and this is what we use for co
 
 Prepare a csv file with these columns for each plate:
 
-`barcode, group, num_picks_group, num_picks_plate`
+`barcode group num_picks_group num_picks_plate`
 
 This is useful for picking a given number of colonies from a group of plates while limiting the number of colonies picked from each individual plate.
 
@@ -57,8 +60,10 @@ A `.yaml` file specifying arguments for the pipeline.
 Based on a reference panel of CAMII pictures, we calculate calibration parameters to account for non-uniform illumination and other artifacts. In the current implmentation, we simply do this by dividing the average value of each pixel by the average over the entire image. Input images in the subsequent steps are then divided by these calibration parameters, so that pixels that typically have extreme values are brought closer to the mean, i.e., background is removed.
 
 ```shell
-./calc_calib_params.py -i <input_dir_with> -o <output_dir> -c <config_file>
+./calc_calib_params.py -i <input_dir_with_reference_bmp_pairs> -o <output_dir> -c <config_file>
 ```
+
+You can find in this repo pre-computed calibration parameters at `./test_data/parameters/calib_parameter.npz`.
 
 #### Picking coordinate correction parameter:
 
@@ -76,7 +81,7 @@ Microbial colonies are detected by the canonical pipeline of image processing: b
 
 
 ```shell
-./detect_colonies.py batch -i <input_path> -o <output_dir> -b <calibration_parameter_npz> -c <config_file>
+./detect_colonies.py -i <input_dir_with_png_pairs> -o <output_dir> -b <calibration_parameter_npz> -c <config_file>
 ```
 
 When input path is a `.png` image, colony detection is performed for this single image, and in the output directory, these output will be generated:
@@ -87,12 +92,12 @@ When input path is a `.png` image, colony detection is performed for this single
 
 When input path is a directory, colony detection is performed for all `.png` images in the directory, and the same list of output files will be generated for each image in the directory.
 
-### Step 2: Colony selection (intial round)
+### Step 2: Colony selection (intial stage)
 
 A subset of all detected colonies will be selected for picking, under constraint set in the plate metadata. We start by selecting `num_picks_group` colonies (in the metadata) from each group using farthest point algorithm. This algorithms randomly choose `num_picks_group` colonies and iteratively refine this set until convergence by replacing a colony the current set by a colony that is farthest away from the current set. When doing replacement, the number of colonies selected for each plate is recorded to not exceed the `num_picks_plate` (in the metadata) limit for each plate.
 
 ```shell
-./select_colonies.py init -p <directory_with_png_images> -i <directory_with_segmentations> -o <output_dir> -d <path_to_metadata> -c <path_to_config>
+./select_colonies.py init -p <directory_with_png_images> -i <directory_with_segmentations> -o <output_dir> -m <path_to_metadata> -c <path_to_config>
 ```
 
 In the output directory, these output will be generated for each plate:
@@ -106,12 +111,12 @@ In this step you need to remove unwanted colonies selected in the first step you
 
 After manual twicking, output segmentation in coco format into the same output directory and name it as `<barcode>_annot_init_post.json`.
 
-### Step 4: Colony selection (post round)
+### Step 4: Colony selection (post stage)
 
 After a few colonies are labeled as bad colonies, the constraints set in the metadata are no longer satisfied. In this step we run a simpler fartherst point algorithm to make up for the lost colonies.
 
 ```shell
-./select_colonies.py post -p <directory_with_png_images> -i <input_dir> -d <path_to_metadata> -s init
+./select_colonies.py post -p <directory_with_png_images> -i <input_dir> -m <path_to_metadata> -s init
 ```
 
 In the output directory, these output will be generated for each plate:
@@ -129,7 +134,7 @@ If you want you can go back to graphical user interface again to exclude bad col
 After you are good with the colony selection on each plate, finalize the selection by generating a few vislization and run Travelling Salesman Problem (TSP) to find the optimal pick order that minimizes robot movement.
 
 ```shell
-./finalize_colony_selection.py -p <directory_with_png_images> -i <input_dir_with_results_from_last_step> -o <output_dir> -d <path_to_metadata> -t [heuristic|exact]
+./select_colonies.py final -p <directory_with_png_images> -i <input_dir_with_results_from_last_step> -o <output_dir> -m <path_to_metadata> -t [heuristic|exact]
 ```
 
 In the output directory, these output will be generated for each plate:

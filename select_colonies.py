@@ -45,6 +45,7 @@ from python_tsp.exact import solve_tsp_dynamic_programming
 from python_tsp.heuristics import solve_tsp_local_search, solve_tsp_simulated_annealing
 import matplotlib.pyplot as plt
 import seaborn as sns
+from tqdm.auto import trange
 
 from utils import read_config, add_contours
 
@@ -146,13 +147,31 @@ def farthest_points_old(data, n, seed: int):
     return np.array(r), np.max(np.min(mm, 0))
 
 
-@singledispatch
-def farthest_points(*args, **kwargs):
-    raise NotImplementedError
+# @singledispatch
+# def farthest_points(*args, **kwargs):
+#     raise NotImplementedError
 
 
-@farthest_points.register
-def _(
+def farthest_points(
+    data: np.ndarray,
+    k: int,
+    seed: int,
+    kmeans_init: bool = False,
+    group_assignment: np.ndarray = None,
+    group_max: dict = None,
+) -> tuple[np.ndarray, float]:
+    if group_assignment is None and group_max is None:
+        return _farthest_points(data, k, seed, kmeans_init)
+    elif group_assignment is not None and group_max is not None:
+        return _farthest_points_with_max(
+            data, k, seed, kmeans_init, group_assignment, group_max
+        )
+    else:
+        raise ValueError("Incompatible group_assignment and group_max.")
+
+
+# @farthest_points.register
+def _farthest_points(
     data: np.ndarray, k: int, seed: int, kmeans_init: bool = False
 ) -> tuple[np.ndarray, float]:
     dist = squareform(pdist(data))
@@ -190,8 +209,8 @@ def _(
     return idx, dist[choices][:, ~choices].min(0).max()
 
 
-@farthest_points.register
-def _(
+# @farthest_points.register
+def _farthest_points_with_max(
     data: np.ndarray,
     k: int,
     seed: int,
@@ -272,7 +291,7 @@ def _(
         if unchanged == k:
             # if for k iterations, the farthest point is unchanged, we have converged
             break
-    return idx, dist[choices][:, ~choices].min(0).max()
+    return idx, dist[choices][:, ~choices].min(0).max().item()
 
     # choices_tortose = choices.copy()
     # pick_counter_tortose = pick_counter.copy()
@@ -497,16 +516,19 @@ def _save_modified(
     df_contour.write_csv(
         os.path.join(output_dir, f"{barcode}_metadata_{annot_stage}.csv")
     )
-    image_contours = _add_contours(
-        cv.imread(os.path.join(image_dir, f"{barcode}_gs_red.png")),
-        _coco_to_contours(dict_border),
-        df_contour["picking_status"].to_list(),
-        df_contour[["center_x", "center_y"]].to_numpy(),
-    )
-    cv.imwrite(
-        os.path.join(output_dir, f"{barcode}_gray_contour_{annot_stage}.png"),
-        image_contours,
-    )
+    for light in ["red", "white"]:
+        image_contours = _add_contours(
+            cv.imread(os.path.join(image_dir, f"{barcode}_rgb_{light}.png")),
+            _coco_to_contours(dict_border),
+            df_contour["picking_status"].to_list(),
+            df_contour[["center_x", "center_y"]].to_numpy(),
+        )
+        cv.imwrite(
+            os.path.join(
+                output_dir, f"{barcode}_rgb_{light}_contour_{annot_stage}.png"
+            ),
+            image_contours,
+        )
 
 
 def _add_contours(
@@ -649,7 +671,8 @@ def pick_colony_final(
         for b in barcodes:
             image_rgb_red = cv.imread(os.path.join(image_dir, f"{b}_rgb_red.png"))
             image_rgb_white = cv.imread(os.path.join(image_dir, f"{b}_rgb_white.png"))
-            image_gray = cv.imread(os.path.join(image_dir, f"{b}_gs_red.png"))
+            image_gs_red = cv.imread(os.path.join(image_dir, f"{b}_gs_red.png"))
+            image_gs_white = cv.imread(os.path.join(image_dir, f"{b}_gs_white.png"))
             df_contour = pl.read_csv(
                 os.path.join(data_dir, f"{b}_metadata_final.csv"),
                 dtypes={"post_pass": bool},
@@ -680,7 +703,8 @@ def pick_colony_final(
             image_rgb_white_contours = _add_contours(
                 image_rgb_white, contours, ps, centers
             )
-            image_gray_contours = _add_contours(image_gray, contours, ps, centers)
+            image_gs_red_contours = _add_contours(image_gs_red, contours, ps, centers)
+            image_gs_white_contours = _add_contours(image_gs_white, contours, ps, centers)
             cv.imwrite(
                 os.path.join(output_dir, f"{b}_rgb_red_contour.jpg"),
                 image_rgb_red_contours,
@@ -690,8 +714,12 @@ def pick_colony_final(
                 image_rgb_white_contours,
             )
             cv.imwrite(
-                os.path.join(output_dir, f"{b}_gray_contour.jpg"),
-                image_gray_contours,
+                os.path.join(output_dir, f"{b}_gs_red_contour.jpg"),
+                image_gs_red_contours,
+            )
+            cv.imwrite(
+                os.path.join(output_dir, f"{b}_gs_white_contour.jpg"),
+                image_gs_white_contours,
             )
 
             # metadata
@@ -793,7 +821,7 @@ if __name__ == "__main__":
         help="path to the output directory",
     )
     parser_init.add_argument(
-        "-d",
+        "-m",
         "--metadata_path",
         required=True,
         type=str,
@@ -819,7 +847,7 @@ if __name__ == "__main__":
         "-i", "--input_dir", required=True, type=str, help="path to the input directory"
     )
     parser_post.add_argument(
-        "-d",
+        "-m",
         "--metadata_path",
         required=True,
         type=str,
@@ -853,7 +881,7 @@ if __name__ == "__main__":
         help="path to the output directory",
     )
     parser_final.add_argument(
-        "-d",
+        "-m",
         "--metadata_path",
         required=True,
         type=str,

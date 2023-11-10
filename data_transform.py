@@ -127,10 +127,15 @@ def process_bmp(input_dir: str, output_dir: str) -> None:
         ).reshape(height, width, 4)[::-1]
         if i % 2:  # white light
             cv.imwrite(os.path.join(output_dir, f"{barcode}_rgb_white.png"), image)
+            cv.imwrite(
+                os.path.join(output_dir, f"{barcode}_gs_white.png"),
+                cv.cvtColor(image, cv.COLOR_BGR2GRAY),
+            )
         else:  # red light
             cv.imwrite(os.path.join(output_dir, f"{barcode}_rgb_red.png"), image)
             cv.imwrite(
-                os.path.join(output_dir, f"{barcode}_gray_red.png"), image[..., 2]
+                os.path.join(output_dir, f"{barcode}_gs_red.png"),
+                cv.cvtColor(image, cv.COLOR_BGR2GRAY),
             )
             # image_gray = cv.imread(
             #     os.path.join(output_dir, f"{barcode}_rgb_red.png"), cv.IMREAD_GRAYSCALE

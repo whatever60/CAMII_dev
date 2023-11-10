@@ -1,13 +1,13 @@
 # system setup
 
 # image calibration
-calib_gaussian_kernal: [27, 27]
+calib_gaussian_kernel: [27, 27]
 calib_gaussian_iteration: 20
 calib_contrast_trans_alpha: 5
 calib_contrast_trans_beta: -100
 #calib_contrast_trans_beta: -70
 
-# image crop
+# image crop, 1938x1296 is the original image size under current camera setting
 crop_y_min: 150
 crop_y_max: 1150
 crop_x_min: 150

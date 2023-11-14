@@ -234,7 +234,12 @@ if __name__ == "__main__":
             npz_path = args.npz_path
             output_dir = args.output_dir or os.path.dirname(npz_path)
             image_name = os.path.splitext(os.path.basename(npz_path))[0]
-            arr = np.load(npz_path)["data"]
+            if npz_path.endswith(".npz"):
+                arr = np.load(npz_path)["data"]
+            elif npz_path.endswith(".npy"):
+                arr = np.load(npz_path)
+            else:
+                raise ValueError("Invalid npz/npy file")
         else:
             raise NotImplementedError
 

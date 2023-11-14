@@ -382,6 +382,7 @@ def _save_outputs_colony_detection(
     image_trans: np.ndarray,
     image_epi: np.ndarray,
     output_dir: str,
+    toss_red: bool = False,
 ) -> None:
     cv.imwrite(f"{output_dir}/{barcode}_gs_red_contour.jpg", image_trans)
     if image_epi is not None:
@@ -394,7 +395,9 @@ def _save_outputs_colony_detection(
     #     "height": image_trans.shape[0] + config["crop_y_min"],
     #     "file_name": None,
     # }
-    contour_border_coco_dict["images"][0]["file_name"] = f"{barcode}_rgb_white.png"
+    contour_border_coco_dict["images"][0]["file_name"] = (
+        f"{barcode}_rgb_white.png" if toss_red else f"{barcode}_rgb_red.png"
+    )
     with open(f"{output_dir}/{barcode}_annot.json", "w") as f:
         json.dump(contour_border_coco_dict, f)
 
@@ -799,10 +802,14 @@ if __name__ == "__main__":
             args.config_path,
             toss_red=args.toss_red,
         )
-    else:
+    elif os.path.isfile(args.input_path):
         detect_colony_single(
             args.input_path,
             args.output_dir,
             calib_param_path=None,
             config_path=args.config_path,
+        )
+    else:
+        raise ValueError(
+            f"Input path: {args.input_path} is neither a file nor a directory."
         )

@@ -21,13 +21,14 @@ Output data from this step:
 
 This step involves human in the loop. Specifically, The 4 column csv file can be 
     iteratively refined in ImageJ to exclude unwanted colonies. When the user is 
-    satistified with the selection, colony selection is finalized.
+    satistified with the picking, colony picking is finalized.
 """
 
 import argparse
 import os
 from itertools import cycle
 import json
+import warnings
 
 import numpy as np
 import numba
@@ -44,7 +45,8 @@ from python_tsp.exact import solve_tsp_dynamic_programming
 from python_tsp.heuristics import solve_tsp_local_search, solve_tsp_simulated_annealing
 import matplotlib.pyplot as plt
 import seaborn as sns
-from tqdm.auto import trange
+
+# from tqdm.auto import trange
 
 from utils import read_config, add_contours
 
@@ -159,6 +161,11 @@ def farthest_points(
     group_assignment: np.ndarray = None,
     group_max: dict = None,
 ) -> tuple[np.ndarray, float]:
+    if k >= data.shape[0]:
+        raise ValueError(
+            f"Number of selected points ({k}) should be smaller than the number of data "
+            f"points ({data.shape[0]})."
+        )
     if group_assignment is None and group_max is None:
         return _farthest_points(data, k, seed, kmeans_init)
     elif group_assignment is not None and group_max is not None:
@@ -166,7 +173,10 @@ def farthest_points(
             data, k, seed, kmeans_init, group_assignment, group_max
         )
     else:
-        raise ValueError("Incompatible group_assignment and group_max.")
+        raise ValueError(
+            "Incompatible `group_assignment` and `group_max`."
+            "They should be both None or both not None."
+        )
 
 
 # @farthest_points.register
@@ -225,22 +235,25 @@ def _farthest_points_with_max(
 
     """
     # parameter sanity check
-    max_select = (
-        pd.concat(
-            [pd.Series(group_assignment).value_counts(), pd.Series(group_max)], axis=1
-        )
-        .min(1)
-        .sort_index()
+    group_max = {k: v if v > 0 else np.inf for k, v in group_max.items()}
+    max_select = pd.concat(
+        [pd.Series(group_assignment).value_counts(), pd.Series(group_max)], axis=1
     )
-    if max_select.sum() < k:
+    max_select.columns = ["num_points", "max_selects"]
+    if max_select.max_selects.sum() < k:
         raise ValueError(
-            "The maximum number of selected points for plate "
-            f"{max_select.index.tolist()} is {max_select.tolist()}, "
+            "The maximum number of selected points for groups "
+            f"{max_select.index.tolist()} are {max_select.tolist()}, "
             f"so at most {max_select.sum()} points can be selected, smaller than "
-            f"what is intended {k}."
+            f"what is intended ({k}).\n"
+            "Please either increase the maximum number of selected points for some "
+            "groups or decrease the number of points to select to make them compatible."
         )
     if not set(group_max).issubset(set(group_assignment)):
-        raise ValueError("Incompatible group names in group_assignment or group_max.")
+        raise ValueError(
+            f"No data points belong to these groups: "
+            f"{set(group_max) - set(group_assignment)}"
+        )
     if not data.shape[0] == len(group_assignment):
         raise ValueError("Incompatible number of data points and group assignments.")
 
@@ -445,6 +458,11 @@ def pick_colony_init(
 
         if num_colonies >= contour_feat.shape[0]:
             choices = list(range(contour_feat.shape[0]))
+            warnings.warn(
+                f"Number of colonies for picking ({num_colonies}) is larger than the "
+                f"number of colonies detected ({contour_feat.shape[0]}) for group "
+                f"{group}. As a result, all colonies are selected."
+            )
         else:
             choices_list, min_dist_list = zip(
                 *joblib.Parallel(n_jobs=8)(
@@ -503,6 +521,13 @@ def _save_modified(
     barcode: str,
     annot_stage: str,
 ) -> None:
+    """These files will be saved to `output_dir`:
+    - `<barcode>_annot_[init|final].json`: coco format segmentation annotation
+    - `<barcode>_metadata_[init|final].csv`: metadata with picking status
+    - `<barcode>_rgb_red_contour_[init|final].png`: RGB image under red light with
+        colony segmentation. Selected colonies highlighted.
+    - `<barcode>_rgb_white_contour_[init|final].png`: same as above for white light.
+    """
     picking_status = df_contour["picking_status"].to_list()
 
     for idx, picking_status in enumerate(picking_status):
@@ -576,7 +601,7 @@ def _coco_to_contours(coco: dict) -> list[np.ndarray]:
 def pick_colony_post(
     image_dir: str, data_dir: str, metadata_path: str, start_from: str = "init"
 ):
-    """Resultant csv files from initial picking are subject to manual selection and
+    """Resultant csv files from initial picking are subject to manual picking and
     colonies of poor quality are removed.
 
     This step finds colonies that are manually removed and mark them in the
@@ -588,6 +613,7 @@ def pick_colony_post(
     for group, (barcodes, num_colonies_plate, num_colonies) in process_metadata(
         metadata_path
     ).items():
+        print("Processing group", group)
         dfs_contour = []
         dicts_border = []
         for b in barcodes:
@@ -602,13 +628,71 @@ def pick_colony_post(
             with open(os.path.join(data_dir, f"{b}_annot_{start_from}.json")) as f:
                 dict_border = json.load(f)
             with open(os.path.join(data_dir, f"{b}_annot_{start_from}_post.json")) as f:
-                picking_status = [
-                    anno["category_id"] for anno in json.load(f)["annotations"]
-                ]
+                dict_border_post = json.load(f)
 
+            cnt_ids = np.array([anno["id"] for anno in dict_border["annotations"]])
+            cnt_ids_post = np.array(
+                [anno["id"] for anno in dict_border_post["annotations"]]
+            )
+            picking_status_post = [
+                anno["category_id"] for anno in dict_border_post["annotations"]
+            ]
+
+            if len(cnt_ids_post) < len(cnt_ids):
+                raise ValueError(
+                    "Number of colonies decreased after manual picking. "
+                    "This is not supported. Colonies should only switch classes but not "
+                    "be deleted."
+                )
+            if not (cnt_ids_post[: len(cnt_ids)] == cnt_ids).all():
+                raise ValueError(
+                    "Order of colonies changed after manual picking."
+                    "This is not supported."
+                )
+
+            intersect = np.in1d(cnt_ids_post, cnt_ids)
+            if not intersect.all():
+                # update dict_border
+                annots_new = np.array(dict_border_post["annotations"], dtype=object)[
+                    ~intersect
+                ].tolist()
+                picking_status_new_vc = pd.Series(picking_status_post)[
+                    ~intersect
+                ].value_counts()
+                dict_border["annotations"].extend(annots_new)
+
+                # update df_contour
+                from detect_colonies import _calc_contours_stats
+
+                cnts_post = _coco_to_contours(dict_border_post)
+                cnts_new = [cnts_post[i.item()] for i in intersect if not i]
+                img = cv.imread(os.path.join(image_dir, f"{b}_rgb_red.png"))
+                rng = np.random.default_rng(42)
+                mock_image = rng.random(img.shape[:2])
+                # get stats and set a few features to null
+                df_contour_new = (
+                    _calc_contours_stats(cnts_new, mock_image, -1)
+                    .drop("close_to_border")
+                    .with_columns(barcode=pl.lit(b))
+                )
+                df_contour_new = df_contour_new.select(
+                    [c for c in df_contour.columns if c in df_contour_new.columns]
+                )
+                df_contour = pl.concat(
+                    [df_contour.drop("contour_idx"), df_contour_new], how="diagonal"
+                ).with_row_count("contour_idx")
+                print(
+                    f"\tFound {len(cnts_new)} new manually added colonies in plate {b}. "
+                    "Some features of these new colonies are calculated while others "
+                    "will be populated with null.\n"
+                    f"\tAmong these new colonies, {picking_status_new_vc.get(1, 0)} are marked"
+                    f"as `picked colony`, {picking_status_new_vc.get(2, 0)} are marked as"
+                    f"`unpicked colony`, and {picking_status_new_vc.get(3, 0)} are marked as"
+                    "`excluded colony`."
+                )
             dicts_border.append(dict_border)
             df_contour = df_contour.with_columns(
-                picking_status=pl.Series(picking_status)
+                picking_status=pl.Series(picking_status_post)
             )
             dfs_contour.append(df_contour)
 
@@ -620,11 +704,20 @@ def pick_colony_post(
         picking_status = df_contour["picking_status"].to_numpy().copy()
         dist, _ = KDTree(data_source).query(data_target)
         num_to_pick = num_colonies - df_source.shape[0]
-        if num_to_pick:
+        if num_to_pick > 0:
+            print(
+                f"\tDoing a quick picking of {num_to_pick} colonies among "
+                f"{len(df_target)} unpicked ones to compensate for colonies manully removed."
+            )
             index_to_modify = np.where(picking_status == 2)[0][
                 np.argpartition(dist, -num_to_pick)[-num_to_pick:]
             ]
             picking_status[index_to_modify] = 1
+        elif num_to_pick < 0:
+            print(
+                "\tMore colonies are marked as picked after manual picking. Class of all "
+                f"colonies will remain as is ({num_colonies} vs. {len(df_source)})."
+            )
 
         df_contour = df_contour.with_columns(picking_status=pl.Series(picking_status))
 
@@ -703,7 +796,9 @@ def pick_colony_final(
                 image_rgb_white, contours, ps, centers
             )
             image_gs_red_contours = _add_contours(image_gs_red, contours, ps, centers)
-            image_gs_white_contours = _add_contours(image_gs_white, contours, ps, centers)
+            image_gs_white_contours = _add_contours(
+                image_gs_white, contours, ps, centers
+            )
             cv.imwrite(
                 os.path.join(output_dir, f"{b}_rgb_red_contour.jpg"),
                 image_rgb_red_contours,
@@ -892,6 +987,8 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
+    if not os.path.isdir(args.image_dir):
+        raise ValueError(f"{args.image_dir} is not a valid directory.")
     if args.command == "init":
         pick_colony_init(
             image_dir=args.image_dir,

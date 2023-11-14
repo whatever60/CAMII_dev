@@ -1,0 +1,4 @@
+barcode,group,num_picks_group,num_picks_plate,groupID,numGroupPick
+FT1AR80,G1,123,-1,G1,768
+FT1AR81,G2,45,-1,G2,384
+FT4AR80,G1,123,-1,G1,768

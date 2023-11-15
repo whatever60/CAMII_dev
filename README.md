@@ -11,6 +11,7 @@ The program runs on Python 3 and is tested with 3.10, third-party packages are:
 - opencv-python, Pillow
 - python-tsp
 - PyYAML, tqdm
+- rich
 
 All packages should be easily installed with pip.
 

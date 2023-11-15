@@ -39,11 +39,11 @@ def loss_function(
     norm = torch.sqrt(a**2 + b**2)
     rotation_penalty = (b / norm) ** 2 + (1 - a) ** 2 + b**2  # Penalty on rotation
     # Penalty on difference between sx and sy
-    stretching_penalty = (sx - sy) ** 2 + (sx - 1) ** 2 + (sy - 1) ** 2
+    stretching_penalty = (sx - sy) ** 2
     return (torch.mean(min_distances), -mnn_score, rotation_penalty, stretching_penalty)
 
 
-def soft_mnn_consistency(cdist: torch.Tensor, temperature: float = 0.5) -> torch.Tensor:
+def soft_mnn_consistency(cdist: torch.Tensor, temperature: float = 1.0) -> torch.Tensor:
     """Compute consistency score between two arrays of keypoints.
 
     The consistency score is defined as the average of the softmax of the negative
@@ -57,8 +57,8 @@ def soft_mnn_consistency(cdist: torch.Tensor, temperature: float = 0.5) -> torch
     # return a consistency score
 
     # Negative softmax to get weights (higher weight for smaller distances)
-    if cdist.shape[0] > cdist.shape[1]:
-        cdist = cdist.t()
+    # if cdist.shape[0] > cdist.shape[1]:
+    #     cdist = cdist.t()
     weights_A_to_B = (-cdist / temperature).softmax(dim=1)  # [n, m]
     weights_B_to_A = (-cdist / temperature).softmax(dim=0)  # [n, m]
 
@@ -134,14 +134,14 @@ def find_affine(
     query: np.ndarray, target: np.ndarray
 ) -> tuple[np.ndarray, float, float, float, float]:
     # hyperparameters
-    lr = 0.0003
-    max_epochs = 2000
+    lr = 0.005
+    max_epochs = 10000
     eps = 0.001
-    patience = 10
+    patience = 100
     beta_d = 1
-    beta_c = 2
-    beta_t = 1
-    beta_s = 1
+    beta_c = 1
+    beta_t = 2
+    beta_s = 2
 
     # Initialization
     # [a, b, tx, ty, sx, sy]
@@ -180,7 +180,7 @@ def find_affine(
                 f"{rot_loss.item():.2f}, {stre_loss.item():.2f}"
             )
         epoch += 1
-        if loss < eps:
+        if last_loss - loss < eps:
             p += 1
         else:
             p = 0

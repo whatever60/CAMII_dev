@@ -45,6 +45,7 @@ from python_tsp.exact import solve_tsp_dynamic_programming
 from python_tsp.heuristics import solve_tsp_local_search, solve_tsp_simulated_annealing
 import matplotlib.pyplot as plt
 import seaborn as sns
+from rich import print as rprint
 
 # from tqdm.auto import trange
 
@@ -527,11 +528,30 @@ def _save_modified(
     - `<barcode>_rgb_red_contour_[init|final].png`: RGB image under red light with
         colony segmentation. Selected colonies highlighted.
     - `<barcode>_rgb_white_contour_[init|final].png`: same as above for white light.
+
+    The order of colonies in the annotation file and metadata file will first base on
+    colony class and then by colony size.
     """
     picking_status = df_contour["picking_status"].to_list()
 
-    for idx, picking_status in enumerate(picking_status):
-        dict_border["annotations"][idx]["category_id"] = picking_status
+    for idx, ps in enumerate(picking_status):
+        dict_border["annotations"][idx]["category_id"] = ps
+
+    df_contour = df_contour.with_row_count("contour_idx")
+    new_order = []
+    for status in pd.Series(picking_status).unique():
+        df = df_contour.filter(pl.col("picking_status") == status)
+        df = df.sort("area", descending=True)
+        new_order.extend(df["contour_idx"].to_list())
+    dict_border["annotations"] = [dict_border["annotations"][i] for i in new_order]
+    for idx, a in enumerate(dict_border["annotations"]):
+        a["id"] = idx
+
+    # a trick to reorder the rows of a polars dataframe by a list of indices, similar
+    # to `.iloc` in pandas.
+    df_contour = df_contour.join(
+        pl.Series(new_order, dtype=pl.UInt32).to_frame("contour_idx"), on="contour_idx"
+    ).drop("contour_idx")
 
     with open(
         os.path.join(output_dir, f"{barcode}_annot_{annot_stage}.json"), "w"
@@ -613,7 +633,7 @@ def pick_colony_post(
     for group, (barcodes, num_colonies_plate, num_colonies) in process_metadata(
         metadata_path
     ).items():
-        print("Processing group", group)
+        rprint(f"[bold green]Post-processing group {group}[/bold green]")
         dfs_contour = []
         dicts_border = []
         for b in barcodes:
@@ -665,7 +685,7 @@ def pick_colony_post(
                 from detect_colonies import _calc_contours_stats
 
                 cnts_post = _coco_to_contours(dict_border_post)
-                cnts_new = [cnts_post[i.item()] for i in intersect if not i]
+                cnts_new = [c for i, c in zip(intersect, cnts_post) if not i]
                 img = cv.imread(os.path.join(image_dir, f"{b}_rgb_red.png"))
                 rng = np.random.default_rng(42)
                 mock_image = rng.random(img.shape[:2])
@@ -681,14 +701,20 @@ def pick_colony_post(
                 df_contour = pl.concat(
                     [df_contour.drop("contour_idx"), df_contour_new], how="diagonal"
                 ).with_row_count("contour_idx")
-                print(
-                    f"\tFound {len(cnts_new)} new manually added colonies in plate {b}. "
-                    "Some features of these new colonies are calculated while others "
-                    "will be populated with null.\n"
-                    f"\tAmong these new colonies, {picking_status_new_vc.get(1, 0)} are marked"
-                    f"as `picked colony`, {picking_status_new_vc.get(2, 0)} are marked as"
-                    f"`unpicked colony`, and {picking_status_new_vc.get(3, 0)} are marked as"
-                    "`excluded colony`."
+                rprint(
+                    "\tFound ",
+                    len(cnts_new),
+                    " new manually added colonies in plate ",
+                    b,
+                    ". Some features of these new colonies are calculated while others will be populated with null.\n",
+                    "\t\tAmong these new colonies, ",
+                    picking_status_new_vc.get(1, 0),
+                    " are marked as [orange]`picked colony`[/orange], ",
+                    picking_status_new_vc.get(2, 0),
+                    " are marked as [orange]`unpicked colony`[/orange], ",
+                    picking_status_new_vc.get(3, 0),
+                    " are marked as [orange]`excluded colony`[/orange].",
+                    sep="",
                 )
             dicts_border.append(dict_border)
             df_contour = df_contour.with_columns(
@@ -705,18 +731,40 @@ def pick_colony_post(
         dist, _ = KDTree(data_source).query(data_target)
         num_to_pick = num_colonies - df_source.shape[0]
         if num_to_pick > 0:
-            print(
-                f"\tDoing a quick picking of {num_to_pick} colonies among "
-                f"{len(df_target)} unpicked ones to compensate for colonies manully removed."
+            rprint(
+                "\tDoing a quick picking of",
+                num_to_pick,
+                "colonies among",
+                len(df_target),
+                "unpicked ones to compensate for colonies manully removed.",
             )
-            index_to_modify = np.where(picking_status == 2)[0][
-                np.argpartition(dist, -num_to_pick)[-num_to_pick:]
-            ]
+            # index_to_modify = np.where(picking_status == 2)[0][
+            #     np.argpartition(dist, -num_to_pick)[-num_to_pick:]
+            # ]
+            cnt_barcodes = df_target["barcode"].to_list()
+            num_picked_barcodes = dict(zip(*df_source["barcode"].value_counts()))
+            plate2num_cnts = {
+                b: i if i > 0 else np.inf for b, i in zip(barcodes, num_colonies_plate)
+            }
+            index_to_modify = []
+            for idx in np.argsort(dist)[::-1]:
+                b = cnt_barcodes[idx]
+                if num_picked_barcodes[b] < plate2num_cnts[b]:
+                    index_to_modify.append(idx)
+                    num_to_pick -= 1
+                if num_to_pick == 0:
+                    break
             picking_status[index_to_modify] = 1
         elif num_to_pick < 0:
-            print(
-                "\tMore colonies are marked as picked after manual picking. Class of all "
-                f"colonies will remain as is ({num_colonies} vs. {len(df_source)})."
+            rprint(
+                "\tMore colonies are marked as picked after manual picking (",
+                num_colonies,
+                " vs. ",
+                len(df_source),
+                "). ",
+                "Class of ",
+                "all colonies will remain as is.",
+                sep="",
             )
 
         df_contour = df_contour.with_columns(picking_status=pl.Series(picking_status))

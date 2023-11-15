@@ -8,6 +8,7 @@ import argparse
 from sklearn.decomposition import PCA
 from PIL import Image
 import cv2 as cv
+import matplotlib.pyplot as plt
 from tqdm.auto import trange
 import yaml
 
@@ -250,13 +251,29 @@ if __name__ == "__main__":
 
         # save first 3 PCs as RGB
         arr_flat = arr.reshape(-1, arr.shape[-1])
-        image_pca = (
-            PCA(n_components=3).fit_transform(arr_flat).reshape(arr.shape[:-1] + (3,))
-        )
+        pca = PCA(n_components=3).fit(arr_flat)
+        image_pca = pca.transform(arr_flat).reshape(arr.shape[:-1] + (3,))
         # normalize the image to [0, 1] by treating 0.005 and 0.995 quantile as 0 and 1
         q005, q995 = np.quantile(image_pca, [0.005, 0.995])
         image_pca = ((image_pca - q005) / (q995 - q005)).clip(0, 1)
         image_pca = Image.fromarray((image_pca * 255).astype(np.uint8))
-        image_pca.save(os.path.join(output_dir, image_name + "_pc3.jpg"))
+        image_pca.save(os.path.join(output_dir, image_name + "_pc3.png"))
+
+        # plot loading^2 for PC1, PC2, and PC3, with wavelength values as x tick labels
+        fig, ax = plt.subplots()
+        ax.plot(wls, pca.components_[0] ** 2, label="PC1")
+        ax.plot(wls, pca.components_[1] ** 2, label="PC2")
+        ax.plot(wls, pca.components_[2] ** 2, label="PC3")
+        ax.set_xlabel("Wavelength")
+        ax.set_ylabel("Loading^2")
+        ax.legend()
+        # put legend outside of the plot
+        ax.legend(bbox_to_anchor=(1.05, 1), loc="upper left", borderaxespad=0.0)
+        fig.savefig(
+            os.path.join(output_dir, image_name + "_loading_pc1.jpg"),
+            bbox_inches="tight",
+            dpi=300,
+        )
+
     elif args.subcommand == "process_bmp":
         process_bmp(args.input_dir, args.output_dir)

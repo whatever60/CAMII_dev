@@ -31,9 +31,12 @@ def detect_colony_batch(
     for image_label, image_trans_path, image_epi_path in zip(
         image_label_list, image_trans_list, image_epi_list
     ):
-        image_trans, image_epi = load_corrected_image(
-            config, image_trans_path, image_epi_path, calib_param_path, toss_red
+        image_trans_raw = cv.imread(image_trans_path, 0).astype(np.float32)
+        image_epi_raw = cv.imread(image_epi_path, cv.IMREAD_COLOR).astype(np.float32)
+        image_trans, image_epi = correct_image(
+            config, image_trans_raw, image_epi_raw, calib_param_path, toss_red
         )
+        print("Detecting colonies for", image_label)
         contours, df = detect_colony(image_trans, config)
         # add channel stats
         df = pl.concat(
@@ -45,29 +48,25 @@ def detect_colony_batch(
             ],
             how="horizontal",
         )
+        df = _modify_output_object_colony_detection(df, image_label, config)
+        contours = [
+            cnt + np.array([config["crop_x_min"], config["crop_y_min"]])
+            for cnt in contours
+        ]
+
         image_trans_pin = add_contours(
-            image_trans,
+            image_trans_raw,
             contours,
             df[["center_x", "center_y"]].to_numpy(),
             config["plate_qc_colony_contour_pixel"],
             config["plate_qc_colony_contour_pixel"],
         )
         image_epi_pin = add_contours(
-            image_epi,
+            image_epi_raw,
             contours,
             df[["center_x", "center_y"]].to_numpy(),
             config["plate_qc_colony_contour_pixel"],
             config["plate_qc_colony_contour_pixel"],
-        )
-        _modify_output_object_colony_detection(df, image_label, config)
-
-        contours = [
-            cnt + np.array([config["crop_x_min"], config["crop_y_min"]])
-            for cnt in contours
-        ]
-        df = df.with_columns(
-            pl.col("center_x") + config["crop_x_min"],
-            pl.col("center_y") + config["crop_y_min"],
         )
         _save_outputs_colony_detection(
             df,
@@ -94,8 +93,9 @@ def detect_colony_single(
     config["crop_x_min"] = 0
     config["crop_x_max"] = 1164
     image_label = os.path.basename(input_path).split("_")[0]
-    image_trans, _ = load_corrected_image(
-        config, input_path, None, calib_param_path=calib_param_path
+    image_trans_raw = cv.imread(input_path, 0).astype(np.float32)
+    image_trans, _ = correct_image(
+        config, image_trans_raw, None, calib_param_path=calib_param_path
     )
     # if len(image_trans.shape) == 3:
     #     image_trans = cv.cvtColor(image_trans, cv.COLOR_BGR2GRAY)
@@ -109,21 +109,17 @@ def detect_colony_single(
     os.makedirs(output_dir, exist_ok=True)
 
     contours, df = detect_colony(image_trans, config)
+    df = _modify_output_object_colony_detection(df, image_label, config)
+    contours = [
+        cnt + np.array([config["crop_x_min"], config["crop_y_min"]]) for cnt in contours
+    ]
 
     image_trans_pin = add_contours(
-        image_trans,
+        image_trans_raw,
         contours,
         df[["center_x", "center_y"]].to_numpy(),
         config["plate_qc_colony_contour_pixel"],
         config["plate_qc_colony_contour_pixel"],
-    )
-    _modify_output_object_colony_detection(df, image_label, config)
-    contours = [
-        cnt + np.array([config["crop_x_min"], config["crop_y_min"]]) for cnt in contours
-    ]
-    df = df.with_columns(
-        pl.col("center_x") + config["crop_x_min"],
-        pl.col("center_y") + config["crop_y_min"],
     )
     _save_outputs_colony_detection(
         df,
@@ -135,10 +131,10 @@ def detect_colony_single(
     )
 
 
-def load_corrected_image(
+def correct_image(
     config: dict,
-    image_trans_path: str = None,
-    image_epi_path: str = None,
+    image_trans_raw: np.ndarray = None,
+    image_epi_raw: np.ndarray = None,
     calib_param_path: str = None,  # path to a npz file
     toss_red: bool = False,
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -154,10 +150,9 @@ def load_corrected_image(
     crop_y_min = config["crop_y_min"]
     crop_y_max = config["crop_y_max"]
 
-    if image_trans_path is None:
+    if image_trans_raw is None:
         image_trans_corr = None
     else:
-        image_trans_raw = cv.imread(image_trans_path, 0).astype(np.float32)
         image_trans = crop(
             image_trans_raw, crop_x_min, crop_x_max, crop_y_min, crop_y_max
         )
@@ -168,20 +163,26 @@ def load_corrected_image(
             + config["calib_contrast_trans_beta"]
         )
 
-    if image_epi_path is None:
+    if image_epi_raw is None:
         image_epi_corr = None
     else:
-        image_epi_raw = cv.imread(image_epi_path, cv.IMREAD_COLOR).astype(np.float32)
         image_epi = crop(image_epi_raw, crop_x_min, crop_x_max, crop_y_min, crop_y_max)
-        image_epi_corr = image_epi / calib_param["image_epi_calib"]
+        if toss_red:
+            image_epi = image_epi.max() - image_epi
+            # switch red and blue channel
+            # image_epi = image_epi[..., ::-1]
+            image_trans = cv.cvtColor(image_epi, cv.COLOR_BGR2GRAY)
+            # if "D1SD104" in image_trans_path:
+            #     import pdb
 
-    if toss_red:
-        image_trans_corr = cv.cvtColor(image_epi_corr, cv.COLOR_BGR2GRAY)
-        image_trans_corr = image_trans_corr.max() - image_trans_corr
-        image_trans_corr = (
-            image_trans_corr * config["calib_contrast_trans_alpha"]
-            + config["calib_contrast_trans_beta"]
-        )
+            #     pdb.set_trace()
+            image_trans_corr = (
+                image_trans
+                / calib_param["image_trans_calib"]
+                * config["calib_contrast_trans_alpha"]
+                + config["calib_contrast_trans_beta"]
+            )
+        image_epi_corr = image_epi / calib_param["image_epi_calib"]
     return image_trans_corr, image_epi_corr
 
 
@@ -210,23 +211,28 @@ def detect_colony(
     )
 
     # edge detection and contouring
+    try:
+        # threshold2 = np.percentile(
+        #     np.ma.masked_equal(
+        #         np.random.choice(
+        #             image_res_gb.flatten(), config["size_sub_sample"], replace=True
+        #         ),
+        #         0,
+        #     ).compressed(),
+        #     config["canny_upper_percentile"],
+        # )
+        threshold2 = np.percentile(
+            image_res_gb.flatten(), config["canny_upper_percentile"]
+        )
+    except IndexError:  # happens when image_res_gb is nearly all zeros
+        threshold2 = 0
     contours, _ = cv.findContours(
         cv.erode(
             src=cv.dilate(
                 src=cv.Canny(
                     image=image_res_gb.astype(np.uint8),
                     threshold1=1,
-                    threshold2=np.percentile(
-                        np.ma.masked_equal(
-                            np.random.choice(
-                                image_res_gb.flatten(),
-                                config["size_sub_sample"],
-                                replace=True,
-                            ),
-                            0,
-                        ).compressed(),
-                        config["canny_upper_percentile"],
-                    ),
+                    threshold2=threshold2,
                 ),
                 kernel=None,
                 iterations=3,
@@ -237,6 +243,12 @@ def detect_colony(
         cv.RETR_EXTERNAL,
         cv.CHAIN_APPROX_SIMPLE,
     )
+
+    no_cnt_flag = 0
+    if not contours:
+        contours = [np.array([[0, 0], [0, 1], [1, 1], [1, 0]]).reshape(-1, 1, 2)]
+        no_cnt_flag = 1
+        print("\tNo colony detected even before any filtering.")
 
     df_contour = _calc_contours_stats(
         contours, image_trans, config["segment_bias"] + config["filter_bias"]
@@ -312,6 +324,11 @@ def detect_colony(
         if need_pp
         for j in postprocess_contour(cnt, image_trans, config)
     ]
+    if not no_cnt_flag:
+        print(f"\t{len(contours)} colonies detected.")
+        print(f"\t{len(contours_dp)} colonies passed initial filtering.")
+        print(f"\t{len(contours_pp)} colonies need post-processing.")
+
     df_contour = df_contour.filter(pl.col("direct_pass"))
     if contours_pp:
         df_contour_pp = _calc_contours_stats(
@@ -337,8 +354,12 @@ def detect_colony(
             [df_contour, df_contour_pp.filter(pl.col("post_pass"))],
             how="diagonal",
         )
+        if not no_cnt_flag:
+            print(f"\t\t{len(contours_pp)} colonies passed post-processing.")
     # collect contours
     contours = contours_dp + contours_pp
+
+    print(f"\t{len(contours)} colonies passed first filtering.")
 
     if not contours:
         return contours, df_contour
@@ -362,15 +383,20 @@ def detect_colony(
         min_dist_pass=pl.Series(min_dist_pass),
         min_dist_pin_pass=pl.Series(min_dist_pin_pass),
     ).filter(pl.col("min_dist_pass") & pl.col("min_dist_pin_pass"))
+
+    if no_cnt_flag:
+        df_contour = df_contour.clear()
+    else:
+        print(f"\t{len(contours)} colonies passed second filtering.")
     return contours, df_contour
 
 
 def _modify_output_object_colony_detection(
     df: pl.DataFrame, barcode: str, config: dict
-) -> None:
+) -> pl.DataFrame:
     return df.with_columns(
-        center_x_raw=pl.col("center_x") + config["crop_x_min"],
-        center_y_raw=pl.col("center_y") + config["crop_y_min"],
+        center_x=pl.col("center_x") + config["crop_x_min"],
+        center_y=pl.col("center_y") + config["crop_y_min"],
         plate_barcode=pl.lit(barcode),
     ).with_row_count("colony_index")
 
@@ -433,22 +459,6 @@ def _contours_to_coco(contours: list[np.ndarray]) -> dict:
         ],
     }
     return data
-
-
-def _coco_to_contours(data: dict) -> list[np.ndarray]:
-    """Convert COCO format to contours."""
-    return [
-        np.array(
-            [
-                [x, y]
-                for x, y in zip(
-                    annotation["segmentation"][0][::2],
-                    annotation["segmentation"][0][1::2],
-                )
-            ]
-        )
-        for annotation in data["annotations"]
-    ]
 
 
 def crop(image, crop_x_min, crop_x_max, crop_y_min, crop_y_max):

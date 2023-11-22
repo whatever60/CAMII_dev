@@ -1,8 +1,8 @@
 import sys
-import glob
 import os
 from collections import defaultdict
 import yaml
+import glob
 
 import numpy as np
 import cv2 as cv
@@ -66,13 +66,14 @@ def read_file_list(input_dir: str) -> tuple[list[str], list[str], list[str]]:
     image_label_list = []
     image_trans_list = []
     image_epi_list = []
-    for i, image in enumerate(sorted(glob.glob(os.path.join(input_dir, "*.png")))):
+    for image in sorted(glob.glob(f"{input_dir}/*_rgb_red.png")):
+        # red light rgb image
         barcode = os.path.splitext(os.path.basename(image))[0].split("_")[0]
-        if i % 4 == 2:  # red light rgb image
-            image_label_list.append(barcode)
-            image_trans_list.append(image)
-        elif i % 4 == 3:  # white light rgb image
-            image_epi_list.append(image)
+        image_label_list.append(barcode)
+        image_trans_list.append(image)
+    for image in sorted(glob.glob(f"{input_dir}/*_rgb_white.png")):
+        # white light rgb image
+        image_epi_list.append(image)
     return image_label_list, image_trans_list, image_epi_list
 
 
@@ -91,10 +92,10 @@ def add_contours(
     else:
         image_contours = image.copy()
 
-    cv.drawContours(
-        image_contours, contours, -1, border_color, contour_pixel
-    ).astype(np.uint8)
-    
+    cv.drawContours(image_contours, contours, -1, border_color, contour_pixel).astype(
+        np.uint8
+    )
+
     for idx, c in enumerate(np.round(centers).astype(int)):
         cv.circle(image_contours, tuple(c), center_pixel, center_color, -1)
         if annot_index:
@@ -110,3 +111,11 @@ def add_contours(
             )
 
     return image_contours
+
+
+def _coco_to_contours(coco: dict, category_id: int = None) -> list[np.ndarray]:
+    return [
+        np.array(anno["segmentation"][0]).reshape(-1, 1, 2).astype(np.int32)
+        for anno in coco["annotations"]
+        if category_id is None or anno["category_id"] == category_id
+    ]

@@ -49,7 +49,7 @@ from rich import print as rprint
 
 # from tqdm.auto import trange
 
-from utils import read_config, add_contours
+from utils import read_config, add_contours, _coco_to_contours
 
 
 def colony_feat_pca(df_contour: pl.DataFrame) -> pl.DataFrame:
@@ -609,13 +609,6 @@ def _add_contours(
             annot_index=annot_index,
         )
     return image
-
-
-def _coco_to_contours(coco: dict) -> list[np.ndarray]:
-    return [
-        np.array(anno["segmentation"][0]).reshape(-1, 1, 2).astype(np.int32)
-        for anno in coco["annotations"]
-    ]
 
 
 def pick_colony_post(

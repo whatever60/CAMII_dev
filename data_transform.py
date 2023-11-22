@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 import struct
+import json
 import ast
 import numpy as np
 import os
@@ -55,7 +56,7 @@ def bil2np(bil_path: str, samples: int, lines: int, channels: int) -> np.ndarray
     return arr.reshape(lines, channels, samples).transpose(2, 0, 1)
 
 
-def np2jpg(arr: np.ndarray, wls: list, ceiling: int) -> Image:
+def np2png(arr: np.ndarray, wls: list, ceiling: int) -> Image:
     if not arr.shape[2] == len(wls):
         raise ValueError(
             "Number of channels in data and number of wavelengths do not match"
@@ -147,7 +148,7 @@ if __name__ == "__main__":
     # example usages:
     # 1. Convert one hyperspectral image from .bil to .npy
     # python3 bil2numpy.py bil2npy --metadata <hdr_path> bil2npy <bil_path> --output_dir <output_dir>
-    # 2. Convert one hyperspectral npy file to jpg with RGB channels.
+    # 2. Convert one hyperspectral npy file to png with RGB channels.
 
     parser = argparse.ArgumentParser(description="Utility for data processing")
     subparsers = parser.add_subparsers(title="subcommands", dest="subcommand")
@@ -161,13 +162,25 @@ if __name__ == "__main__":
     bil2npy_parser.add_argument(
         "--config", type=str, default=None, help="configuration string"
     )
+    bil2npy_parser.add_argument(
+        "--mask",
+        type=str,
+        default=None,
+        help="Mask file path, should be in coco json format",
+    )
 
-    npy2jpg_parser = subparsers.add_parser("npy2jpg", help="Convert NPY to JPG")
-    npy2jpg_parser.add_argument(
+    npy2png_parser = subparsers.add_parser("npy2png", help="Convert NPY to png")
+    npy2png_parser.add_argument(
         "-i", "--npz_path", type=str, help="path to the NPY file"
     )
-    npy2jpg_parser.add_argument("-m", "--metadata", type=str, help="metadata file")
-    npy2jpg_parser.add_argument("-o", "--output_dir", type=str, default=None)
+    npy2png_parser.add_argument("-m", "--metadata", type=str, help="metadata file")
+    npy2png_parser.add_argument("-o", "--output_dir", type=str, default=None)
+    npy2png_parser.add_argument(
+        "--mask",
+        type=str,
+        default=None,
+        help="Mask file path, should be in coco json format",
+    )
 
     process_bmp_parser = subparsers.add_parser("process_bmp", help="Process BMP files")
     process_bmp_parser.add_argument(
@@ -179,7 +192,7 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    if args.subcommand in ["bil2npy", "npy2jpg"]:
+    if args.subcommand in ["bil2npy", "npy2png"]:
         metadata_file = args.metadata
         if metadata_file.endswith(".bil.hdr"):
             metadata = parse_metadata(metadata_file)
@@ -231,48 +244,58 @@ if __name__ == "__main__":
                     }
                 )
                 yaml.safe_dump(metadata, f, default_flow_style=None)
-        elif args.subcommand == "npy2jpg":
+        elif args.subcommand == "npy2png":
             npz_path = args.npz_path
             output_dir = args.output_dir or os.path.dirname(npz_path)
             image_name = os.path.splitext(os.path.basename(npz_path))[0]
-            if npz_path.endswith(".npz"):
-                arr = np.load(npz_path)["data"]
-            elif npz_path.endswith(".npy"):
-                arr = np.load(npz_path)
-            else:
-                raise ValueError("Invalid npz/npy file")
+            arr = np.load(npz_path)["data"]
         else:
             raise NotImplementedError
 
         # do this for both subcommands
-        # save as jpg
-        image = np2jpg(arr, wls, ceiling)
-        image.save(os.path.join(output_dir, image_name + "_rgb.jpg"))
+        # save as png
+        image = np2png(arr, wls, ceiling)
+        image.save(os.path.join(output_dir, image_name + "_rgb.png"))
 
         # save first 3 PCs as RGB
         arr_flat = arr.reshape(-1, arr.shape[-1])
+        if args.mask:
+            from utils import _coco_to_contours
+
+            with open(args.mask) as f:
+                masks = _coco_to_contours(json.load(f))
+            mask = cv.drawContours(
+                np.zeros(arr.shape[:-1], dtype=np.uint8), masks, -1, 255, -1
+            )
+            arr_flat = arr_flat[mask.flatten() > 0]
         pca = PCA(n_components=3).fit(arr_flat)
-        image_pca = pca.transform(arr_flat).reshape(arr.shape[:-1] + (3,))
+        image_pca = pca.transform(arr_flat)
         # normalize the image to [0, 1] by treating 0.005 and 0.995 quantile as 0 and 1
-        q005, q995 = np.quantile(image_pca, [0.005, 0.995])
+        q005, q995 = np.quantile(image_pca, [0.005, 0.995], axis=0)
         image_pca = ((image_pca - q005) / (q995 - q005)).clip(0, 1)
+        if args.mask:
+            image_pca_ = np.zeros((np.prod(arr.shape[:-1]), 3))
+            image_pca_[mask.flatten() > 0] = image_pca
+            image_pca = image_pca_
+        image_pca = image_pca.reshape(arr.shape[:-1] + (3,))
+        # In the saved image, first 3 PCs are in the order of RGB.
         image_pca = Image.fromarray((image_pca * 255).astype(np.uint8))
         image_pca.save(os.path.join(output_dir, image_name + "_pc3.png"))
 
-        # plot loading^2 for PC1, PC2, and PC3, with wavelength values as x tick labels
-        fig, ax = plt.subplots()
-        ax.plot(wls, pca.components_[0] ** 2, label="PC1")
-        ax.plot(wls, pca.components_[1] ** 2, label="PC2")
-        ax.plot(wls, pca.components_[2] ** 2, label="PC3")
+        # plot loading^2
+        loadings_squared = np.square(pca.components_)
+        fig, ax = plt.subplots(figsize=(7, 4))
+        ax.plot(wls, loadings_squared[0, :], color="r", label="PC1")
+        ax.plot(wls, loadings_squared[1, :], color="g", label="PC2")
+        ax.plot(wls, loadings_squared[2, :], color="b", label="PC3")
+        ax.set_title("Squared loadings on first 3 PCs across wavelength")
         ax.set_xlabel("Wavelength")
-        ax.set_ylabel("Loading^2")
-        ax.legend()
-        # put legend outside of the plot
-        ax.legend(bbox_to_anchor=(1.05, 1), loc="upper left", borderaxespad=0.0)
-        fig.savefig(
-            os.path.join(output_dir, image_name + "_loading_pc1.jpg"),
-            bbox_inches="tight",
+        ax.set_ylabel("Squared loadings")
+        ax.legend(bbox_to_anchor=(1.05, 1), loc=2, borderaxespad=0.0)
+        fig.save_fig(
+            os.path.join(output_dir, image_name + "_pc3_loading.png"),
             dpi=300,
+            bbox_inches="tight",
         )
 
     elif args.subcommand == "process_bmp":

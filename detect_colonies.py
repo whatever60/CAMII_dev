@@ -167,22 +167,19 @@ def correct_image(
         image_epi_corr = None
     else:
         image_epi = crop(image_epi_raw, crop_x_min, crop_x_max, crop_y_min, crop_y_max)
-        if toss_red:
-            image_epi = image_epi.max() - image_epi
-            # switch red and blue channel
-            # image_epi = image_epi[..., ::-1]
-            image_trans = cv.cvtColor(image_epi, cv.COLOR_BGR2GRAY)
-            # if "D1SD104" in image_trans_path:
-            #     import pdb
-
-            #     pdb.set_trace()
-            image_trans_corr = (
-                image_trans
-                / calib_param["image_trans_calib"]
-                * config["calib_contrast_trans_alpha"]
-                + config["calib_contrast_trans_beta"]
-            )
         image_epi_corr = image_epi / calib_param["image_epi_calib"]
+        if toss_red:
+            # image_trans_corr = (
+            #     cv.cvtColor(
+            #         (image_epi.max() - image_epi) / calib_param["image_epi_calib"],
+            #         cv.COLOR_BGR2GRAY,
+            #     )
+            #     * config["calib_contrast_trans_alpha"]
+            #     + config["calib_contrast_trans_beta"]
+            # )
+            image_trans_corr = cv.cvtColor(
+                image_epi.max() - image_epi, cv.COLOR_BGR2GRAY
+            )
     return image_trans_corr, image_epi_corr
 
 

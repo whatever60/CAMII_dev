@@ -1,7 +1,7 @@
 # system setup
 
 # image calibration
-calib_gaussian_kernel: [27, 27]
+calib_gaussian_kernel: [13, 13]
 calib_gaussian_iteration: 20
 calib_contrast_trans_alpha: 5
 calib_contrast_trans_beta: -100
@@ -31,13 +31,13 @@ min_convexity: 0.2
 max_convexity: 1
 min_inertia: 0.2
 max_inertia: 1
-min_dist: 3
-min_dist_pin: 3
+min_dist: 1
+min_dist_pin: 1
 circularity_threshold: 0.85
 circularity_threshold_very_bad: 0.5
 
 # multi-colony segmentation
-area_segment_min: 300
+area_segment_min: 30
 area_segment_max: 50000
 segment_bias: 10
 filter_bias: 20

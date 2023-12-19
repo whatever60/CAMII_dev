@@ -5,12 +5,13 @@ import ast
 import numpy as np
 import os
 import argparse
+import glob
 
 from sklearn.decomposition import PCA
 from PIL import Image
 import cv2 as cv
 import matplotlib.pyplot as plt
-from tqdm.auto import trange
+from tqdm.auto import trange, tqdm
 import yaml
 
 
@@ -117,16 +118,12 @@ def process_bmp(input_dir: str, output_dir: str) -> None:
     Convert bmp images to png images.
     """
     os.makedirs(output_dir, exist_ok=True)
-    for i, f in enumerate(
-        sorted(f for f in os.listdir(input_dir) if f.endswith(".bmp"))
-    ):
-        barcode = os.path.splitext(f)[0].split("_")[0]
-        width, height = np.fromfile(
-            os.path.join(input_dir, f), dtype=np.uint32, offset=18, count=2
-        )
-        image = np.fromfile(
-            os.path.join(input_dir, f), dtype=np.uint8, offset=54
-        ).reshape(height, width, 4)[::-1]
+    for i, f in enumerate(tqdm(sorted(glob.glob(f"{input_dir}/*.bmp")))):
+        barcode = os.path.splitext(os.path.basename(f))[0].split("_")[0]
+        width, height = np.fromfile(f, dtype=np.uint32, offset=18, count=2)
+        image = np.fromfile(f, dtype=np.uint8, offset=54).reshape(height, width, 4)[
+            ::-1
+        ]
         if i % 2:  # white light
             cv.imwrite(os.path.join(output_dir, f"{barcode}_rgb_white.png"), image)
             cv.imwrite(

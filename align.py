@@ -8,6 +8,46 @@ import torch
 import torch.optim as optim
 
 
+class PatienceLogger:
+    def __init__(self, patience, min_delta=1e-5):
+        """
+        Initializes the logger with a specified patience and minimum delta for improvement.
+
+        :param patience: Number of epochs to wait after the last significant improvement.
+        :param min_delta: Minimum change in the loss to qualify as an improvement.
+        """
+        self.patience = patience
+        self.min_delta = min_delta
+        self.best_loss = float("inf")
+        self.best_params = None
+        self.best_epoch = None
+        self.epochs_without_improvement = 0
+        self.stop_training = False
+
+    def log(self, epoch, loss, params):
+        """
+        Logs the loss for a given epoch and updates the best parameters if the loss improved significantly.
+
+        :param epoch: Current epoch number.
+        :param loss: Loss for the current epoch.
+        :param params: Parameters for the current epoch.
+        """
+        # Update the best loss, parameters, and epoch if the current loss is lower than the best recorded loss
+        if loss < self.best_loss:
+            self.best_loss = loss
+            self.best_params = params
+            self.best_epoch = epoch
+
+        # Check if the improvement is significant
+        if self.best_loss - loss > self.min_delta:
+            self.epochs_without_improvement = 0
+        else:
+            self.epochs_without_improvement += 1
+
+        # Check if training should stop
+        if self.epochs_without_improvement >= self.patience:
+            self.stop_training = True
+
 
 def standardize(x: torch.Tensor, return_stats: bool = False) -> torch.Tensor:
     if not return_stats:
@@ -17,30 +57,43 @@ def standardize(x: torch.Tensor, return_stats: bool = False) -> torch.Tensor:
 
 
 def loss_function(
-    params,
-    keypointsA,
-    keypointsB,
-):
+    params: torch.Tensor,
+    keypointsA: torch.Tensor,
+    keypointsB: torch.Tensor,
+    weight: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Compute loss as average distance between transformed keypointsA and nearest
     keypointsB, with penalties. Note that in this setup `keypointB` acts as the
     reference.
+
+    Loss components are returned as float number in tensor graph.
     """
     a, b, tx, ty, sx, sy = params
     transformedA = affine_transform(params, keypointsA)
-    cdist = torch.cdist(transformedA, keypointsB)  # [n, m]
+    # [n, m], where n is the number of keypoints in A and m is the number of keypoints in B.
+    cdist = torch.cdist(transformedA, keypointsB)
     min_distances, _ = torch.min(cdist, dim=1)
 
     # Reward correct pairing. Correct pairing is identified by mutual nearest neighbor.
     # Pairing could also be achieved by thresholding ratio of distances between nearest
     # and second nearest neighbors.
-    mnn_score = soft_mnn_consistency(cdist)
+    mnn_scores = soft_mnn_consistency(cdist)
 
     # Regularization terms
     norm = torch.sqrt(a**2 + b**2)
     rotation_penalty = (b / norm) ** 2 + (1 - a) ** 2 + b**2  # Penalty on rotation
     # Penalty on difference between sx and sy
     stretching_penalty = (sx - sy) ** 2
-    return (torch.mean(min_distances), -mnn_score, rotation_penalty, stretching_penalty)
+    # min_distances: [n]
+    # mnn_scores: [n]
+    # rotation_penalty: float
+    # stretching_penalty: float
+    return (
+        (min_distances * weight).mean(),
+        (-mnn_scores * weight).mean(),
+        rotation_penalty,
+        stretching_penalty,
+    )
 
 
 def soft_mnn_consistency(cdist: torch.Tensor, temperature: float = 1.0) -> torch.Tensor:
@@ -67,9 +120,9 @@ def soft_mnn_consistency(cdist: torch.Tensor, temperature: float = 1.0) -> torch
     consistency_scores = weights_B_to_A[
         torch.arange(len(max_indices_A_to_B)), max_indices_A_to_B
     ]
-    # consistency_scores *= 
+    # consistency_scores *=
     # consistency_scores = (weights_B_to_A * weights_A_to_B)
-    return consistency_scores.mean()
+    return consistency_scores
 
 
 def affine_transform(params: torch.Tensor, keypoints: torch.Tensor):
@@ -80,10 +133,20 @@ def affine_transform(params: torch.Tensor, keypoints: torch.Tensor):
     a, b, tx, ty, sx, sy = params
     norm = torch.sqrt(a**2 + b**2)
     sin_t, cos_t = b / norm, a / norm
+    # scaling + rotation, then translation
     transformed_keypoints = keypoints @ torch.stack(
         [torch.stack([sx * cos_t, -sy * sin_t]), torch.stack([sx * sin_t, sy * cos_t])],
         dim=0,
     ) + torch.stack([tx, ty])
+    # translation, rotation, then scaling
+    # transformed_keypoints = (
+    #     (keypoints + torch.stack([tx, ty]))
+    #     @ torch.stack(
+    #         [torch.stack([cos_t, -sin_t]), torch.stack([sin_t, cos_t])],
+    #         dim=0,
+    #     )
+    #     * torch.tensor([sx, sy])
+    # )
     return transformed_keypoints
 
 
@@ -131,12 +194,13 @@ def get_query2target_func(
 
 
 def find_affine(
-    query: np.ndarray, target: np.ndarray
+    query: np.ndarray,
+    target: np.ndarray,
+    weighted_by: str = "uniform",
 ) -> tuple[np.ndarray, float, float, float, float]:
     # hyperparameters
     lr = 0.005
     max_epochs = 10000
-    eps = 0.001
     patience = 100
     beta_d = 1
     beta_c = 1
@@ -149,9 +213,7 @@ def find_affine(
     optimizer = optim.Adam([params], lr=lr)
 
     # Optimization loop
-    last_loss = 0
     epoch = 0
-    p = 0
 
     query = torch.from_numpy(query).float()
     target = torch.from_numpy(target).float()
@@ -159,10 +221,25 @@ def find_affine(
     query_rescaled, mean_q, std_q = standardize(query, return_stats=True)
     target_rescaled, mean_t, std_t = standardize(target, return_stats=True)
 
-    while epoch < max_epochs and p < patience:
+    # return (
+    #     params.detach().numpy(),
+    #     mean_q.item(),
+    #     std_q.item(),
+    #     mean_t.item(),
+    #     std_t.item(),
+    # )
+
+    if weighted_by == "uniform":
+        weight = torch.ones_like(query_rescaled[:, 0])
+    elif weighted_by == "centrality":
+        # weight by distance to origin of query data points after scaling
+        weight = query_rescaled[:, 0].abs() + query_rescaled[:, 1].abs()
+
+    logger = PatienceLogger(patience)
+    while epoch < max_epochs:
         optimizer.zero_grad()
         nn_loss, mnn_loss, rot_loss, stre_loss = loss_function(
-            params, query_rescaled, target_rescaled
+            params, query_rescaled, target_rescaled, weight=weight
         )
         loss = (
             nn_loss * beta_d
@@ -172,6 +249,7 @@ def find_affine(
         )
         loss.backward()
         optimizer.step()
+        logger.log(epoch, loss, params)
 
         if epoch % 100 == 0:
             print(
@@ -180,13 +258,11 @@ def find_affine(
                 f"{rot_loss.item():.2f}, {stre_loss.item():.2f}"
             )
         epoch += 1
-        if last_loss - loss < eps:
-            p += 1
-        else:
-            p = 0
-        last_loss = loss
-    else:
-        print(f"Optimized Parameters at Epoch {epoch}: {params.detach().numpy()}")
+        if logger.stop_training:
+            params = logger.best_params
+            epoch = logger.best_epoch
+            break
+    print(f"Optimized Parameters at Epoch {epoch}: {params.detach().numpy()}")
 
     # the transformation that goes from query to standardardized query
     return (
@@ -228,18 +304,23 @@ def find_mutual_pairs(array_q: np.ndarray, array_t: np.ndarray) -> np.ndarray:
         ):
             mutual_pairs[i] = p
 
-    return np.array(mutual_pairs)
+    return mutual_pairs
 
 
 def align(
-    center_rgb: np.ndarray, center_hsi: np.ndarray, center_taxa: np.ndarray
+    center_rgb: np.ndarray,
+    center_hsi: np.ndarray,
+    center_taxa: np.ndarray,
+    weighted_by: str = "uniform",
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    hsi2rgb_param, *hsi2rgb_stats = find_affine(center_hsi, center_rgb)
+    hsi2rgb_param, *hsi2rgb_stats = find_affine(center_hsi, center_rgb, weighted_by)
     hsi2rgb_func = get_query2target_func(*hsi2rgb_param, *hsi2rgb_stats)
     center_hsi2rgb = hsi2rgb_func(center_hsi)
     map_hsi = find_mutual_pairs(center_rgb, center_hsi2rgb)
 
-    taxa2rgb_param, *taxa2rgb_stats = find_affine(center_taxa, center_rgb)
+    taxa2rgb_param, *taxa2rgb_stats = find_affine(
+        center_taxa, center_rgb, weighted_by="uniform"
+    )
     taxa2rgb_func = get_query2target_func(*taxa2rgb_param, *taxa2rgb_stats)
     center_taxa2rgb = taxa2rgb_func(center_taxa)
     map_taxa = find_mutual_pairs(center_rgb, center_taxa2rgb)

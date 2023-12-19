@@ -29,6 +29,7 @@ import os
 from itertools import cycle
 import json
 import warnings
+import warnings
 
 import numpy as np
 import numba
@@ -633,7 +634,12 @@ def pick_colony_post(
             df_contour = (
                 pl.read_csv(
                     os.path.join(data_dir, f"{b}_metadata_{start_from}.csv"),
-                    dtypes={"post_pass": bool},
+                    dtypes={
+                        "post_pass": bool,
+                        "pass_initial": bool,
+                        "need_pp": bool,
+                        "direct_pass": bool,
+                    },
                 )
                 .with_columns(barcode=pl.lit(b))
                 .with_row_count("contour_idx")
@@ -895,7 +901,13 @@ def pick_colony_final(
 
 def _tsp(data: np.ndarray, tsp_method: str = "heuristic") -> np.ndarray:
     """Reorder picked colonies to minimize movement"""
-    assert tsp_method in ["heuristic", "exact"]
+    if tsp_method not in ["heuristic", "exact"]:
+        raise ValueError(
+            f"Invalid tsp_method {tsp_method}. Choose from 'heuristic' or 'exact'."
+        )
+    if data.shape[0] <= 2:
+        warnings.warn("TSP problem has only 2 or fewer points. No reordering needed.")
+        return np.arange(data.shape[0])
     dm = squareform(pdist(data))
     dm[:, 0] = 0  # "open" TSP problem
     if tsp_method == "heuristic":

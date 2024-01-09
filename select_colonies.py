@@ -44,13 +44,17 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.cluster import KMeans
 from python_tsp.exact import solve_tsp_dynamic_programming
 from python_tsp.heuristics import solve_tsp_local_search, solve_tsp_simulated_annealing
+import matplotlib
 import matplotlib.pyplot as plt
 import seaborn as sns
 from rich import print as rprint
+from tqdm.auto import tqdm, trange
 
-# from tqdm.auto import trange
 
 from utils import read_config, add_contours, _coco_to_contours
+
+
+matplotlib.use("TkAgg")
 
 
 def colony_feat_pca(df_contour: pl.DataFrame) -> pl.DataFrame:
@@ -242,17 +246,17 @@ def _farthest_points_with_max(
         [pd.Series(group_assignment).value_counts(), pd.Series(group_max)], axis=1
     )
     max_select.columns = ["num_points", "max_selects"]
-    if max_select.max_selects.sum() < k:
+    if max_select.max(axis=1).sum() < k:
         raise ValueError(
             "The maximum number of selected points for groups "
-            f"{max_select.index.tolist()} are {max_select.tolist()}, "
-            f"so at most {max_select.sum()} points can be selected, smaller than "
+            f"{max_select.index.tolist()} are {max_select.max(axis=1).astype(int).tolist()}, "
+            f"so at most {max_select.max().sum().astype(int)} points can be selected, smaller than "
             f"what is intended ({k}).\n"
             "Please either increase the maximum number of selected points for some "
             "groups or decrease the number of points to select to make them compatible."
         )
     if not set(group_max).issubset(set(group_assignment)):
-        raise ValueError(
+        warnings.warn(
             f"No data points belong to these groups: "
             f"{set(group_max) - set(group_assignment)}"
         )
@@ -291,6 +295,16 @@ def _farthest_points_with_max(
 
         groups_good = [i for i in group_max if pick_counter[i] < group_max[i]]
         to_choose = np.logical_and(~choices, np.isin(group_assignment, groups_good))
+        if not to_choose.any():
+            # if no points are available, we have converged
+            choices[j] = True
+            pick_counter[group_assignment[j]] += 1
+            if choices.sum() < k:
+                warnings.warn(
+                    f"Early stopping: only {choices.sum()} points are selected while "
+                    f"{k} are intended."
+                )
+            break
         replace_idx = to_choose.nonzero()[0][
             dist[choices][:, to_choose].min(0).argmax()
         ]
@@ -422,6 +436,18 @@ def process_metadata(metadata_path: str) -> dict[str, tuple[int, list[str], list
     }
 
 
+def _get_empty_df(dfs: list[pl.DataFrame] | dict[str, pl.DataFrame]) -> pl.DataFrame:
+    if isinstance(dfs, dict):
+        non_empty_idx = [k for k, df in dfs.items() if df.shape[0] > 0]
+    elif isinstance(dfs, list):
+        non_empty_idx = [i for i, df in enumerate(dfs) if df.shape[0] > 0]
+    else:
+        raise TypeError("`dfs` should be either a list or a dict.")
+    if not non_empty_idx:
+        raise ValueError("At least one dataframe should be non-empty.")
+    return dfs[non_empty_idx[0]].slice(0, 0)
+
+
 def pick_colony_init(
     image_dir: str,
     input_dir: str,
@@ -437,7 +463,13 @@ def pick_colony_init(
     ).items():
         dfs_contour = [
             pl.read_csv(
-                os.path.join(input_dir, f"{b}_metadata.csv"), dtypes={"post_pass": bool}
+                os.path.join(input_dir, f"{b}_metadata.csv"),
+                dtypes={
+                    "post_pass": bool,
+                    "pass_initial": bool,
+                    "need_pp": bool,
+                    "direct_pass": bool,
+                },
             )
             .with_columns(barcode=pl.lit(b))
             .with_row_count("contour_idx")
@@ -454,6 +486,12 @@ def pick_colony_init(
         #     ).with_columns(barcode=pl.lit(b))
         #     for b in barcodes
         # ]
+
+        # replace empty contour dataframes with a dummy dataframe with same schema
+        df_dummy = _get_empty_df(dfs_contour)
+        dfs_contour = [
+            df if df.shape[0] > 0 else df_dummy.clone() for df in dfs_contour
+        ]
         df_contour = pl.concat(dfs_contour).with_row_count("contour_idx_group")
         df_contour = colony_feat_pca(df_contour)
         contour_feat = df_contour[["pca1", "pca2"]].to_numpy()
@@ -501,7 +539,10 @@ def pick_colony_init(
         dfs_contour = df_contour.drop(
             ["contour_idx", "contour_idx_group"]
         ).partition_by("barcode", as_dict=True)
-        dfs_contour = [dfs_contour[b] for b in barcodes]
+        df_dummy = _get_empty_df(dfs_contour)
+        dfs_contour = [
+            dfs_contour[b] if b in dfs_contour else df_dummy.clone() for b in barcodes
+        ]
         for barcode, df_contour, dict_border in zip(
             barcodes, dfs_contour, dicts_border
         ):
@@ -720,7 +761,10 @@ def pick_colony_post(
                 picking_status=pl.Series(picking_status_post)
             )
             dfs_contour.append(df_contour)
-
+        df_dummy = _get_empty_df(dfs_contour)
+        dfs_contour = [
+            df if df.shape[0] > 0 else df_dummy.clone() for df in dfs_contour
+        ]
         df_contour = pl.concat(dfs_contour).with_row_count("contour_idx_group")
         df_source = df_contour.filter(pl.col("picking_status") == 1)
         df_target = df_contour.filter(pl.col("picking_status") == 2)
@@ -729,7 +773,7 @@ def pick_colony_post(
         picking_status = df_contour["picking_status"].to_numpy().copy()
         dist, _ = KDTree(data_source).query(data_target)
         num_to_pick = num_colonies - df_source.shape[0]
-        if num_to_pick > 0:
+        if num_to_pick > 0 and num_to_pick <= len(df_target):
             rprint(
                 "\tDoing a quick picking of",
                 num_to_pick,
@@ -754,7 +798,7 @@ def pick_colony_post(
                 if num_to_pick == 0:
                     break
             picking_status[index_to_modify] = 1
-        elif num_to_pick < 0:
+        elif num_to_pick <= 0:
             rprint(
                 "\tMore colonies are marked as picked after manual picking (",
                 num_colonies,
@@ -765,13 +809,26 @@ def pick_colony_post(
                 "all colonies will remain as is.",
                 sep="",
             )
+        elif len(df_target) == 0:
+            rprint(
+                "\tNo colonies are marked as unpicked after manual picking. "
+                "Class of all colonies will remain as is."
+            )
+        else:
+            import pdb; pdb.set_trace()
+            rprint("Some other cases.")
 
         df_contour = df_contour.with_columns(picking_status=pl.Series(picking_status))
 
         dfs_contour_dict = df_contour.drop(
             ["contour_idx", "contour_idx_group"]
         ).partition_by("barcode", as_dict=True)
-        dfs_contour_dict = [dfs_contour_dict[b] for b in barcodes]
+        # dfs_contour_dict = [dfs_contour_dict[b] for b in barcodes]
+        df_dummy = _get_empty_df(dfs_contour_dict)
+        dfs_contour_dict = [
+            dfs_contour_dict[b] if b in dfs_contour_dict else df_dummy.clone()
+            for b in barcodes
+        ]
         for barcode, df_contour, dict_border in zip(
             barcodes, dfs_contour_dict, dicts_border
         ):
@@ -808,15 +865,27 @@ def pick_colony_final(
     ).items():
         dfs_contour = []
         for b in barcodes:
+            df_contour = pl.read_csv(
+                os.path.join(data_dir, f"{b}_metadata_final.csv"),
+                dtypes={
+                    "post_pass": bool,
+                    "picking_status": int,
+                    "pass_initial": bool,
+                    "need_pp": bool,
+                    "direct_pass": bool,
+                },
+            )
+            dfs_contour.append(df_contour)
+        df_dummy = _get_empty_df(dfs_contour)
+        dfs_contour = [
+            df if df.shape[0] > 0 else df_dummy.clone() for df in dfs_contour
+        ]
+
+        for b, df_contour in zip(tqdm(barcodes), dfs_contour):
             image_rgb_red = cv.imread(os.path.join(image_dir, f"{b}_rgb_red.png"))
             image_rgb_white = cv.imread(os.path.join(image_dir, f"{b}_rgb_white.png"))
             image_gs_red = cv.imread(os.path.join(image_dir, f"{b}_gs_red.png"))
             image_gs_white = cv.imread(os.path.join(image_dir, f"{b}_gs_white.png"))
-            df_contour = pl.read_csv(
-                os.path.join(data_dir, f"{b}_metadata_final.csv"),
-                dtypes={"post_pass": bool},
-            )
-            dfs_contour.append(df_contour)
             centers = df_contour[["center_x", "center_y"]].to_numpy()
             ps = df_contour["picking_status"].to_numpy()
             with open(os.path.join(data_dir, f"{b}_annot_final.json")) as f:
@@ -1035,7 +1104,12 @@ if __name__ == "__main__":
         help="path to the metadata file",
     )
     parser_final.add_argument(
-        "-t", "--tsp_method", required=True, type=str, help="tsp method"
+        "-t",
+        "--tsp_method",
+        type=str,
+        help="tsp method",
+        choices=["heuristic", "exact"],
+        default=None,
     )
 
     args = parser.parse_args()

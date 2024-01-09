@@ -14,7 +14,10 @@ def coordinate_correction(input_dir, parameter_path: str):
     config_x = config["x"]
     config_y = config["y"]
     for i in sorted(glob.glob(os.path.join(input_dir, "*_picking.csv"))):
-        coor = pl.read_csv(i, has_header=False, new_columns=["x", "y"])
+        try:
+            coor = pl.read_csv(i, has_header=False, new_columns=["x", "y"])
+        except pl.exceptions.NoDataError:
+            continue
         coor = coor.with_columns(
             x=pl.col("x")
             - (
@@ -33,9 +36,9 @@ def coordinate_correction(input_dir, parameter_path: str):
         ).with_columns(
             pl.col("x").round().cast(pl.Int32), pl.col("y").round().cast(pl.Int32)
         )
-        coor.write_csv(
-            os.path.splitext(i)[0] + "_corrected.csv", has_header=False
-        )
+        barcode = os.path.splitext(os.path.basename(i))[0].split("_")[0]
+        out_name = os.path.join(os.path.dirname(i), f"{barcode}_Coordinates.csv")
+        coor.write_csv(out_name, has_header=False)
 
 
 if __name__ == "__main__":

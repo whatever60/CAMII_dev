@@ -44,8 +44,8 @@ class PatienceLogger:
         else:
             self.epochs_without_improvement += 1
 
-        # Check if training should stop
-        if self.epochs_without_improvement >= self.patience:
+        # Check if training should stop (don't stop if loss is nan)
+        if self.epochs_without_improvement >= self.patience and not torch.isnan(loss):
             self.stop_training = True
 
 
@@ -251,7 +251,7 @@ def find_affine(
         optimizer.step()
         logger.log(epoch, loss, params)
 
-        if epoch % 100 == 0:
+        if epoch and epoch % 100 == 0:
             print(
                 f"Epoch {epoch}, Loss: {loss.item():.2f}, "
                 f"Loss comps: {nn_loss.item():.2f}, {mnn_loss.item():.2f}, "

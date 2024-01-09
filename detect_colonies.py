@@ -14,6 +14,7 @@ import cv2 as cv
 from skimage import morphology
 from skimage.feature import peak_local_max
 from skimage.segmentation import random_walker
+from rich import print as rprint
 
 from utils import read_config, read_file_list, add_contours
 
@@ -36,7 +37,7 @@ def detect_colony_batch(
         image_trans, image_epi = correct_image(
             config, image_trans_raw, image_epi_raw, calib_param_path, toss_red
         )
-        print("Detecting colonies for", image_label)
+        rprint("Detecting colonies for", image_label)
         contours, df = detect_colony(image_trans, config)
         # add channel stats
         df = pl.concat(
@@ -245,7 +246,7 @@ def detect_colony(
     if not contours:
         contours = [np.array([[0, 0], [0, 1], [1, 1], [1, 0]]).reshape(-1, 1, 2)]
         no_cnt_flag = 1
-        print("\tNo colony detected even before any filtering.")
+        rprint("\tNo colony detected even before any filtering.")
 
     df_contour = _calc_contours_stats(
         contours, image_trans, config["segment_bias"] + config["filter_bias"]
@@ -322,9 +323,9 @@ def detect_colony(
         for j in postprocess_contour(cnt, image_trans, config)
     ]
     if not no_cnt_flag:
-        print(f"\t{len(contours)} colonies detected.")
-        print(f"\t{len(contours_dp)} colonies passed initial filtering.")
-        print(f"\t{len(contours_pp)} colonies need post-processing.")
+        rprint(f"\t{len(contours)} colonies detected.")
+        rprint(f"\t{len(contours_dp)} colonies passed initial filtering.")
+        rprint(f"\t{len(contours_pp)} colonies need post-processing.")
 
     df_contour = df_contour.filter(pl.col("direct_pass"))
     if contours_pp:
@@ -352,11 +353,15 @@ def detect_colony(
             how="diagonal",
         )
         if not no_cnt_flag:
-            print(f"\t\t{len(contours_pp)} colonies passed post-processing.")
+            rprint(f"\t\t{len(contours_pp)} colonies passed post-processing.")
+    else:
+        df_contour = df_contour.with_columns(
+            post_pass=pl.Series([False] * len(df_contour))
+        )
     # collect contours
     contours = contours_dp + contours_pp
 
-    print(f"\t{len(contours)} colonies passed first filtering.")
+    rprint(f"\t{len(contours)} colonies passed first filtering.")
 
     if not contours:
         return contours, df_contour
@@ -384,7 +389,7 @@ def detect_colony(
     if no_cnt_flag:
         df_contour = df_contour.clear()
     else:
-        print(f"\t{len(contours)} colonies passed second filtering.")
+        rprint(f"\t{len(contours)} colonies passed second filtering.")
     return contours, df_contour
 
 

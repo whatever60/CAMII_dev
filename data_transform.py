@@ -6,14 +6,18 @@ import numpy as np
 import os
 import argparse
 import glob
+import sys
 
 from sklearn.decomposition import PCA
 from PIL import Image
 import cv2 as cv
+import matplotlib
 import matplotlib.pyplot as plt
 from tqdm.auto import trange, tqdm
 import yaml
 
+
+matplotlib.use("TkAgg")
 
 # R_WL, G_WL, B_WL = 700, 550, 450
 R_WL_LOW, R_WL_HIGH, G_WL_LOW, G_WL_HIGH, B_WL_LOW, B_WL_HIGH = (
@@ -165,6 +169,11 @@ if __name__ == "__main__":
         default=None,
         help="Mask file path, should be in coco json format",
     )
+    bil2npy_parser.add_argument(
+        "--pca",
+        action="store_true",
+        help="Whether to save the first 3 PCs as RGB image",
+    )
 
     npy2png_parser = subparsers.add_parser("npy2png", help="Convert NPY to png")
     npy2png_parser.add_argument(
@@ -177,6 +186,11 @@ if __name__ == "__main__":
         type=str,
         default=None,
         help="Mask file path, should be in coco json format",
+    )
+    npy2png_parser.add_argument(
+        "--pca",
+        action="store_true",
+        help="Whether to save the first 3 PCs as RGB image",
     )
 
     process_bmp_parser = subparsers.add_parser("process_bmp", help="Process BMP files")
@@ -254,6 +268,8 @@ if __name__ == "__main__":
         image = np2png(arr, wls, ceiling)
         image.save(os.path.join(output_dir, image_name + "_rgb.png"))
 
+        if args.pca is not True:
+            sys.exit(0)
         # save first 3 PCs as RGB
         arr_flat = arr.reshape(-1, arr.shape[-1])
         if args.mask:
@@ -289,7 +305,7 @@ if __name__ == "__main__":
         ax.set_xlabel("Wavelength")
         ax.set_ylabel("Squared loadings")
         ax.legend(bbox_to_anchor=(1.05, 1), loc=2, borderaxespad=0.0)
-        fig.save_fig(
+        fig.savefig(
             os.path.join(output_dir, image_name + "_pc3_loading.png"),
             dpi=300,
             bbox_inches="tight",

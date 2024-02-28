@@ -145,6 +145,36 @@ def process_bmp(input_dir: str, output_dir: str) -> None:
             # )
 
 
+def hsi_pca(
+    arr: np.ndarray, mask: np.ndarray = None, quantile: float = 0.05
+) -> np.ndarray:
+    arr_flat = arr.reshape(-1, arr.shape[-1])
+    if mask is None:
+        # default mask is masking the peripheral regions of the array, only leaving the 
+        # center 1/2
+        mask = np.ones(arr.shape[:-1])
+        mask[
+            arr.shape[0] // 4 : 3 * arr.shape[0] // 4,
+            arr.shape[1] // 4 : 3 * arr.shape[1] // 4,
+        ] = 0
+    if not mask.shape == arr.shape[:-1]:
+        raise ValueError(
+            "mask should have the same shape as the first two dimensions of array"
+        )
+    mask = mask.flatten().astype(bool)
+    arr_flat_nonmask = arr_flat[mask]
+    arr_flat_masked = arr_flat[~mask]
+    pca = PCA(n_components=3).fit(arr_flat_nonmask)
+    image_pca = pca.transform(arr_flat_nonmask)
+    # normalize the image to [0, 1] by treating 0.005 and 0.995 quantile as 0 and 1
+    qmin, qmax = np.quantile(image_pca, [quantile, 1 - quantile], axis=0)
+    ret = np.zeros((np.prod(arr.shape[:-1]), 3))
+    ret[mask] = image_pca
+    ret[~mask] = pca.transform(arr_flat_masked)
+    ret = ((ret - qmin) / (qmax - qmin)).clip(0, 1)
+    return ret.reshape(arr.shape[:-1] + (3,)), pca.n_components_
+
+
 if __name__ == "__main__":
     # example usages:
     # 1. Convert one hyperspectral image from .bil to .npy
@@ -280,23 +310,16 @@ if __name__ == "__main__":
             mask = cv.drawContours(
                 np.zeros(arr.shape[:-1], dtype=np.uint8), masks, -1, 255, -1
             )
-            arr_flat = arr_flat[mask.flatten() > 0]
-        pca = PCA(n_components=3).fit(arr_flat)
-        image_pca = pca.transform(arr_flat)
-        # normalize the image to [0, 1] by treating 0.005 and 0.995 quantile as 0 and 1
-        q005, q995 = np.quantile(image_pca, [0.005, 0.995], axis=0)
-        image_pca = ((image_pca - q005) / (q995 - q005)).clip(0, 1)
-        if args.mask:
-            image_pca_ = np.zeros((np.prod(arr.shape[:-1]), 3))
-            image_pca_[mask.flatten() > 0] = image_pca
-            image_pca = image_pca_
-        image_pca = image_pca.reshape(arr.shape[:-1] + (3,))
+        else:
+            mask = None
+            
+        image_pca, loadings = hsi_pca(arr, mask)
         # In the saved image, first 3 PCs are in the order of RGB.
         image_pca = Image.fromarray((image_pca * 255).astype(np.uint8))
         image_pca.save(os.path.join(output_dir, image_name + "_pc3.png"))
 
         # plot loading^2
-        loadings_squared = np.square(pca.components_)
+        loadings_squared = np.square(loadings)
         fig, ax = plt.subplots(figsize=(7, 4))
         ax.plot(wls, loadings_squared[0, :], color="r", label="PC1")
         ax.plot(wls, loadings_squared[1, :], color="g", label="PC2")

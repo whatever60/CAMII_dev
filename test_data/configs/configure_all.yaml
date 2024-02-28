@@ -8,44 +8,45 @@ calib_contrast_trans_beta: -100
 #calib_contrast_trans_beta: -70
 
 # image crop, 1938x1296 is the original image size under current camera setting
-crop_y_min: 150
-crop_y_max: 1150
-crop_x_min: 150
-crop_x_max: 1750
+crop_y_min: null
+crop_y_max: null
+crop_x_min: null
+crop_x_max: null
 
 # background removal
-bg_threshold_block_size: 501
-bg_threshold_offset: 18
+# bg_threshold_block_size: 15
+# bg_threshold_offset: 2
 
 # contour detection
-canny_upper_percentile: 80
+# canny_upper_percentile: 80
+simple_detect: true
 
 # quality filtering
-min_size: 400
-max_size: 2000000
-min_circularity: 0.2
+min_size: 0
+max_size: 999_999_999
+min_circularity: 0
 max_circularity: 1
-small_size_area: 80
-small_size_circularity: 0.85
-min_convexity: 0.2
+small_size_area: 0
+small_size_circularity: 0
+min_convexity: 0
 max_convexity: 1
-min_inertia: 0.2
+min_inertia: 0
 max_inertia: 1
-min_dist: 1
-min_dist_pin: 1
-circularity_threshold: 0.85
-circularity_threshold_very_bad: 0.5
+min_dist: 0
+min_dist_pin: 0
+circularity_threshold: 0.
+circularity_threshold_very_bad: 0.
 
 # multi-colony segmentation
-area_segment_min: 100
+area_segment_min: 30
 area_segment_max: 50000
-segment_bias: 10
-filter_bias: 20
+segment_bias: 0
+filter_bias: 0
 size_sub_sample: 10000
-post_min_size: 30
-post_min_circularity: 0.5
-post_min_convexity: 0.5
-post_min_inertia: 0.5
+post_min_size: 400
+post_min_circularity: 0
+post_min_convexity: 0
+post_min_inertia: 0
 random_walker_beta: 2000
 random_walker_method: bf
 random_walker_maxi_size: 17

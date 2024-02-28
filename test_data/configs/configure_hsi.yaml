@@ -33,14 +33,14 @@ min_inertia: 0.2
 max_inertia: 1
 min_dist: 1
 min_dist_pin: 1
-circularity_threshold: 0.85
-circularity_threshold_very_bad: 0.5
+circularity_threshold: 0.7
+circularity_threshold_very_bad: 0.4
 
 # multi-colony segmentation
 area_segment_min: 100
 area_segment_max: 50000
-segment_bias: 10
-filter_bias: 20
+segment_bias: 0
+filter_bias: 0
 size_sub_sample: 10000
 post_min_size: 30
 post_min_circularity: 0.5

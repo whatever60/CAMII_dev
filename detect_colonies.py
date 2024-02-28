@@ -22,8 +22,8 @@ from utils import read_config, read_file_list, add_contours
 def detect_colony_batch(
     input_dir: str,
     output_dir: str,
-    calib_param_path: str,
-    config_path: str,
+    calib_param_path: str = f"{os.path.dirname(__file__)}/test_data/parameters/calib_parameter.npz",
+    config_path: str = f"{os.path.dirname(__file__)}/test_data/configs/configure.yaml",
     toss_red: bool = False,
 ) -> None:
     image_label_list, image_trans_list, image_epi_list = read_file_list(input_dir)
@@ -80,24 +80,37 @@ def detect_colony_batch(
 
 
 def detect_colony_single(
-    input_path: str, output_dir: str, calib_param_path: str, config_path: str
+    input_path: str,
+    output_dir: str,
+    calib_param_path: str = None,
+    config_path: str = f"{os.path.dirname(__file__)}/test_data/configs/configure.yaml",
 ) -> None:
     """Colony detection for a single image follows the same logic as batch detection,
     except that correction is skipped.
     """
     # read config, image label, and the image itself.
     config = read_config(config_path)
-    config["calib_contrast_trans_alpha"] = -1
+    config["calib_contrast_trans_alpha"] = 1
     config["calib_contrast_trans_beta"] = 255
     config["crop_y_min"] = 0
-    config["crop_y_max"] = 744
+    config["crop_y_max"] = None
     config["crop_x_min"] = 0
-    config["crop_x_max"] = 1164
-    image_label = os.path.basename(input_path).split("_")[0]
-    image_trans_raw = cv.imread(input_path, 0).astype(np.float32)
-    image_trans, _ = correct_image(
-        config, image_trans_raw, None, calib_param_path=calib_param_path
-    )
+    config["crop_x_max"] = None
+    image_label = os.path.basename(input_path).split(".")[0].split("_")[0]
+    rprint("Detecting colonies for", image_label)
+    image_trans_raw = cv.imread(input_path, cv.IMREAD_COLOR).astype(np.float32)
+    image_trans_raw_cropped = image_trans_raw[
+        image_trans_raw.shape[0] // 10 : 9 * image_trans_raw.shape[0] // 10,
+        image_trans_raw.shape[1] // 10 : 9 * image_trans_raw.shape[1] // 10,
+    ]
+    config["crop_x_min"] = image_trans_raw.shape[1] // 10
+    config["crop_y_min"] = image_trans_raw.shape[0] // 10
+    image_trans_raw_cropped = image_trans_raw_cropped[..., 2].copy()
+    image_trans = image_trans_raw_cropped.max() - image_trans_raw_cropped
+    # image_trans = 255 - image_trans
+    # image_trans, _ = correct_image(
+    #     config, image_trans_raw, None, calib_param_path=calib_param_path
+    # )
     # if len(image_trans.shape) == 3:
     #     image_trans = cv.cvtColor(image_trans, cv.COLOR_BGR2GRAY)
     # image_trans = (
@@ -184,51 +197,59 @@ def correct_image(
     return image_trans_corr, image_epi_corr
 
 
-def detect_colony(
-    image_trans: np.ndarray, config: dict
-) -> tuple[list[np.ndarray], pl.DataFrame]:
-    # remove background
-    image_mask_bg = cv.adaptiveThreshold(
+def _detect_simple(arr: np.ndarray):
+    if len(arr.shape) == 3:
+        gray = cv.cvtColor(arr, cv.COLOR_BGR2GRAY)
+    else:
+        gray = arr
+    blurred = cv.GaussianBlur(gray, (7, 7), 0).astype(np.uint8)
+    edged = cv.Canny(blurred, 50, 150)
+    contours, _ = cv.findContours(
+        edged.copy(), cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE
+    )
+    filtered_contours = [cnt for cnt in contours if cv.contourArea(cnt)]
+    return filtered_contours
+
+
+def _detect(
+    arr: np.ndarray,
+    bg_gaussian_kernel: int,
+    bg_threshold_block_size: int,
+    bg_threshold_offset: int,
+    fg_gaussian_kernel: int,
+    canny_upper_percentile: float,
+) -> list[np.ndarray]:
+    arr_bg_mask = cv.adaptiveThreshold(
         cv.filter2D(
-            image_trans,
+            arr,
             -1,
-            1.0 / (18 - 8) * np.array([[-1, -1, -1], [-1, 18, -1], [-1, -1, -1]]),
+            np.array([[-1, -1, -1], [-1, bg_gaussian_kernel, -1], [-1, -1, -1]])
+            / (bg_gaussian_kernel - 8),
         ).astype(np.uint8),
         255,
         cv.ADAPTIVE_THRESH_GAUSSIAN_C,
         cv.THRESH_BINARY_INV,
-        config["bg_threshold_block_size"],
-        config["bg_threshold_offset"],
+        bg_threshold_block_size,
+        bg_threshold_offset,
     )
 
     # gaussian blur
-    image_res_gb = cv.GaussianBlur(
-        src=np.where(image_mask_bg, image_trans, 0),
-        ksize=(5, 5),
+    arr_res_bg = cv.GaussianBlur(
+        src=np.where(arr_bg_mask, arr, 0),
+        ksize=(fg_gaussian_kernel, fg_gaussian_kernel),
         sigmaX=0,
     )
 
     # edge detection and contouring
     try:
-        # threshold2 = np.percentile(
-        #     np.ma.masked_equal(
-        #         np.random.choice(
-        #             image_res_gb.flatten(), config["size_sub_sample"], replace=True
-        #         ),
-        #         0,
-        #     ).compressed(),
-        #     config["canny_upper_percentile"],
-        # )
-        threshold2 = np.percentile(
-            image_res_gb.flatten(), config["canny_upper_percentile"]
-        )
+        threshold2 = np.percentile(arr_res_bg.flatten(), canny_upper_percentile)
     except IndexError:  # happens when image_res_gb is nearly all zeros
         threshold2 = 0
     contours, _ = cv.findContours(
         cv.erode(
             src=cv.dilate(
                 src=cv.Canny(
-                    image=image_res_gb.astype(np.uint8),
+                    image=arr_res_bg.astype(np.uint8),
                     threshold1=1,
                     threshold2=threshold2,
                 ),
@@ -241,6 +262,23 @@ def detect_colony(
         cv.RETR_EXTERNAL,
         cv.CHAIN_APPROX_SIMPLE,
     )
+    return contours
+
+
+def detect_colony(
+    image_trans: np.ndarray, config: dict
+) -> tuple[list[np.ndarray], pl.DataFrame]:
+    if config.get("simple_detect"):
+        contours = _detect_simple(image_trans)
+    else:
+        contours = _detect(
+            image_trans,
+            bg_gaussian_kernel=18,
+            bg_threshold_block_size=config["bg_threshold_block_size"],
+            bg_threshold_offset=config["bg_threshold_offset"],
+            fg_gaussian_kernel=5,
+            canny_upper_percentile=config["canny_upper_percentile"],
+        )
 
     no_cnt_flag = 0
     if not contours:
@@ -316,12 +354,15 @@ def detect_colony(
     ]
 
     # post-processing
-    contours_pp = [
-        j
-        for cnt, need_pp in zip(contours, df_contour["need_pp"])
-        if need_pp
-        for j in postprocess_contour(cnt, image_trans, config)
-    ]
+    if config.get("postprocess", True):
+        contours_pp = [
+            j
+            for cnt, need_pp in zip(contours, df_contour["need_pp"])
+            if need_pp
+            for j in postprocess_contour(cnt, image_trans, config)
+        ]
+    else:
+        contours_pp = []
     if not no_cnt_flag:
         rprint(f"\t{len(contours)} colonies detected.")
         rprint(f"\t{len(contours_dp)} colonies passed initial filtering.")
@@ -464,6 +505,15 @@ def _contours_to_coco(contours: list[np.ndarray]) -> dict:
 
 
 def crop(image, crop_x_min, crop_x_max, crop_y_min, crop_y_max):
+    # replace with extreme values if None
+    if crop_x_min is None:
+        crop_x_min = 0
+    if crop_x_max is None:
+        crop_x_max = image.shape[1]
+    if crop_y_min is None:
+        crop_y_min = 0
+    if crop_y_max is None:
+        crop_y_max = image.shape[0]
     return image[crop_y_min:crop_y_max, crop_x_min:crop_x_max]
 
 
@@ -794,12 +844,14 @@ if __name__ == "__main__":
         "-b",
         "--calib_param_path",
         type=str,
+        default=f"{os.path.dirname(__file__)}/test_data/parameters/calib_parameter.npz",
         help="Path to the calibration parameter file.",
     )
     parser.add_argument(
         "-c",
         "--config_path",
         type=str,
+        default=f"{os.path.dirname(__file__)}/test_data/configs/configure.yaml",
         required=True,
         help="Path to the configuration file.",
     )

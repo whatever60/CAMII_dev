@@ -246,11 +246,12 @@ def _farthest_points_with_max(
         [pd.Series(group_assignment).value_counts(), pd.Series(group_max)], axis=1
     )
     max_select.columns = ["num_points", "max_selects"]
-    if max_select.max(axis=1).sum() < k:
+    saturation = max_select.min(axis=1).sum().astype(int)
+    if saturation < k:
         raise ValueError(
             "The maximum number of selected points for groups "
-            f"{max_select.index.tolist()} are {max_select.max(axis=1).astype(int).tolist()}, "
-            f"so at most {max_select.max().sum().astype(int)} points can be selected, smaller than "
+            f"{max_select.index.tolist()} are {max_select.min(axis=1).astype(int).tolist()}, "
+            f"so at most {saturation} points can be selected, smaller than "
             f"what is intended ({k}).\n"
             "Please either increase the maximum number of selected points for some "
             "groups or decrease the number of points to select to make them compatible."
@@ -424,7 +425,7 @@ def process_metadata(metadata_path: str) -> dict[str, tuple[int, list[str], list
     metadata = pd.read_csv(metadata_path)
     g = metadata.groupby("group")
     group2barcodes = g["barcode"].apply(list).to_dict()
-    group2num_colonies_plate = g["num_picks_plate"].apply(list).to_dict()
+    group2num_colonies_plate = g["max_picks_plate"].apply(list).to_dict()
     group2num_colonies_group = g["num_picks_group"].first().to_dict()
     return {
         group: (
@@ -800,7 +801,7 @@ def pick_colony_post(
             picking_status[index_to_modify] = 1
         elif num_to_pick <= 0:
             rprint(
-                "\tMore colonies are marked as picked after manual picking (",
+                "\tNo less colonies are marked as picked after manual picking (",
                 num_colonies,
                 " vs. ",
                 len(df_source),

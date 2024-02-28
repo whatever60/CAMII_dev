@@ -21,7 +21,7 @@ bg_threshold_offset: 18
 canny_upper_percentile: 80
 
 # quality filtering
-min_size: 400
+min_size: 100
 max_size: 2000000
 min_circularity: 0.2
 max_circularity: 1
@@ -33,11 +33,12 @@ min_inertia: 0.2
 max_inertia: 1
 min_dist: 1
 min_dist_pin: 1
-circularity_threshold: 0.85
-circularity_threshold_very_bad: 0.5
+circularity_threshold: 0.5
+circularity_threshold_very_bad: 0
 
 # multi-colony segmentation
-area_segment_min: 100
+postprocess: false
+area_segment_min: 30
 area_segment_max: 50000
 segment_bias: 10
 filter_bias: 20

@@ -16,14 +16,14 @@ import pandas as pd
 import networkx as nx
 from rich import print as rprint
 
-from align import find_affine, get_query2target_func, find_mutual_pairs
+# from align import find_affine, get_query2target_func, find_mutual_pairs
+from align import Aligner, remove_bad_nodes, network_to_map
 
 
 def _read_colony_metadata(colony_metadata_dir: str) -> pd.DataFrame:
     # read colony metadata from CAMII picking pipeline
     colony_metadatas = []
     for f in glob.glob(f"{colony_metadata_dir}/*_metadata.csv"):
-        src_plate_barcode = os.path.basename(f).split("_")[0]
         df_colony = pd.read_csv(f)
         df_colony["colony_barcode"] = (
             df_colony.plate_barcode
@@ -32,10 +32,6 @@ def _read_colony_metadata(colony_metadata_dir: str) -> pd.DataFrame:
             + "x"
             + df_colony.center_y.round(3).astype(str)
         )
-        # if not all(df_colony.plate_barcode == src_plate_barcode):
-        #     raise ValueError(
-        #         f"Plate barcode in colony metadata file {f} does not match the filename."
-        #     )
         df_colony = df_colony.set_index("colony_barcode", verify_integrity=True)
         colony_metadatas.append(df_colony)
     return pd.concat(colony_metadatas)
@@ -63,8 +59,8 @@ def _read_isolate_metadata_rich(
     isolate_metadata.columns = ["picking_coord", "src_plate", "dest_well", "dest_plate"]
     isolate_metadata = pd.merge(
         isolate_metadata,
-        plate_metadata[["barcode", "group", "sample_type"]].rename(
-            {"group": "medium_type", "barcode": "src_plate"}, axis=1
+        plate_metadata[["barcode", "medium_type", "sample_type"]].rename(
+            {"barcode": "src_plate"}, axis=1
         ),
         on="src_plate",
     )
@@ -78,49 +74,6 @@ def _read_isolate_metadata_rich(
         .to_numpy()
     )
     return isolate_metadata.set_index("dest_well_barcode")
-
-
-def map_to_network(map_t2b: list[int], map_b2t: list[int]) -> nx.Graph:
-    """
-    Constructs a directed network from two lists of integer indices.
-    map_t2b: List of target indices in B for each node in A (-1 for no target).
-    map_b2t: List of target indices in A for each node in B (-1 for no target).
-    """
-    G = nx.DiGraph()
-    G.add_nodes_from([f"A{i}" for i in range(len(map_t2b))])
-    G.add_nodes_from([f"B{i}" for i in range(len(map_b2t))])
-    G.add_edges_from(
-        [(f"A{i}", f"B{target}") for i, target in enumerate(map_t2b) if target != -1]
-    )
-    G.add_edges_from(
-        [(f"B{i}", f"A{target}") for i, target in enumerate(map_b2t) if target != -1]
-    )
-
-    return G
-
-
-def remove_bad_nodes(G: nx.Graph, remove_from: str) -> tuple[nx.Graph, list[str]]:
-    """
-    Removes all edges connected to bad nodes from the specified list (A or B) in the network.
-    A bad node is one whose target in the other list is also targeted by other nodes.
-    remove_from: 'A' to remove edges connected to bad nodes from A, 'B' to remove edges from B.
-    """
-
-    if remove_from not in ["A", "B"]:
-        raise ValueError("remove_from must be 'top' or 'bottom'")
-
-    the_other_set = "B" if remove_from == "A" else "A"
-    bad_nodes = {
-        start
-        for node, degree in G.in_degree()
-        if node.startswith(the_other_set) and degree > 1
-        for start, _ in G.in_edges(node)
-    }
-    # remove bad nodes and add back
-    G.remove_nodes_from(bad_nodes)
-    G.add_nodes_from(bad_nodes)
-
-    return G, [int(node[1:]) for node in bad_nodes]
 
 
 def _align_isolate_colony(
@@ -142,34 +95,32 @@ def _align_isolate_colony(
         print("Working on plate", plate)
         colony_plate = colony_metadata.query("plate_barcode == @plate")
         isolate_plate = isolate_metadata.query("src_plate == @plate")
-        center_colony = colony_plate[["center_x", "center_y"]].to_numpy()
-        center_isolate = isolate_plate[["src_x", "src_y"]].to_numpy()
-        i2c_param, *i2c_stats = find_affine(center_isolate, center_colony)
-        i2c_func = get_query2target_func(*i2c_param, *i2c_stats)
-        center_i2c = i2c_func(center_isolate)
-        map_c2i = find_mutual_pairs(center_colony, center_i2c)
-        map_i2c = find_mutual_pairs(center_i2c, center_colony)
+        aligner = Aligner()
+        aligner._meta_rgb_colony = colony_plate
+        aligner._meta_isolate = isolate_plate
+        query, target = "isolate", "rgb"
+        aligner.fit(query=query, target=target)
+        aligner.transform(query=query, target=target)
 
-        g = map_to_network(map_c2i, map_i2c)
-        h, bad_colony_idx = remove_bad_nodes(g, "A")
-        isolate_out_d = np.array(
-            [h.out_degree(f"B{i}") for i in range(len(center_isolate))]
-        )
+        g = aligner._graph_rgb_isolate
+        h, bad_colony_idx = remove_bad_nodes(g, g.name_top)
         map_i2cb = np.where(
-            isolate_out_d == 0, np.nan, colony_plate.index[map_i2c].to_numpy()
+            network_to_map(h)[g.name_bottom] == -1,
+            np.nan,
+            colony_plate.index[aligner._map_rgb_isolate2rgb].to_numpy(),
         )
         bad_colonies.extend(colony_metadata.index[bad_colony_idx].to_list())
         isolate2colony.append(pd.Series(map_i2cb, index=isolate_plate.index))
 
         if log:
             colony_out_d_count = Counter(
-                [v for k, v in g.out_degree() if k.startswith("A")]
+                [v for k, v in g.out_degree() if k.startswith(g.name_top)]
             )
             isolate_out_d_count = Counter(
-                [v for k, v in h.out_degree() if k.startswith("B")]
+                [v for k, v in h.out_degree() if k.startswith(g.name_bottom)]
             )
             rprint(f"\tPlate {plate} alignment completed.")
-            rprint(f"\t\tThe plate has {len(center_colony)} colonies.")
+            rprint(f"\t\tThe plate has {len(colony_plate)} colonies.")
             rprint(
                 f"\t\t\t{colony_out_d_count[0]} colonies have no paired isolate, "
                 f"they are probably not picked."
@@ -180,7 +131,7 @@ def _align_isolate_colony(
                     f"These colonies will not be used."
                 )
 
-            rprint(f"\t\tThe plate has {len(center_isolate)} isolates.")
+            rprint(f"\t\tThe plate has {len(isolate_plate)} isolates.")
             rprint(
                 f"\t\t\t{isolate_out_d_count[0]} isolates have no paired colony, "
                 f"these isolates will not be used."
@@ -195,17 +146,17 @@ def _align_isolate_colony(
 
 
 def read_camii_isolate_data(
-    isolate_count_path: str,
-    isolate_metadata_dir: str,
-    plate_metadata_path: str,
+    isolate_count_paths: list[str] | str,
+    isolate_metadata_path: str,
     colony_metadata_dir: str,
     min_count: int = 10,
     min_purity: float = 0.3,
     log: bool = True,
 ):
-    isolate_metadata = _read_isolate_metadata_rich(
-        isolate_metadata_dir, plate_metadata_path
-    )
+    # isolate_metadata = _read_isolate_metadata_rich(
+    #     isolate_metadata_dir, plate_metadata_path
+    # )
+    isolate_metadata = pd.read_table(isolate_metadata_path, index_col="sample")
     colony_metadata = _read_colony_metadata(colony_metadata_dir)
 
     src_plates_in_iso = isolate_metadata["src_plate"].unique()
@@ -221,15 +172,25 @@ def read_camii_isolate_data(
         colony_metadata, isolate_metadata, plates_in_colony, log=log
     )
 
-    isolate_count = pd.read_table(isolate_count_path, index_col=0).T
-    isolate_count = isolate_count.loc[isolate_metadata.index]
-    isolate_count["colony_barcode"] = isolate_metadata["colony_barcode"]
-    have_count = isolate_metadata.index.isin(isolate_count.index)
-    if not all(have_count):
+    if isinstance(isolate_count_paths, str):
+        isolate_count_paths = [isolate_count_paths]
+    isolate_count = pd.concat(
+        [pd.read_table(i, index_col=0).T for i in isolate_count_paths], axis=1
+    )
+    missing_isolates = np.setdiff1d(isolate_metadata.index, isolate_count.index)
+    if missing_isolates.any():
         warnings.warn(
             "Isolates in isolate metadata are not a subset of colonies in isolate count "
-            f"table, {sum(~have_count)} isolates are missing from isolate count table."
+            f"table, {len(missing_isolates)} isolates are missing from isolate count table."
         )
+    isolate_count = pd.concat(
+        [
+            isolate_count,
+            pd.DataFrame(0, index=missing_isolates, columns=isolate_count.columns),
+        ],
+        axis=0,
+    ).loc[isolate_metadata.index]
+    isolate_count["colony_barcode"] = isolate_metadata["colony_barcode"]
 
     # do QC for colony
     isolate_count = isolate_count.groupby("colony_barcode").sum()
@@ -332,24 +293,18 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "-c",
-        "--isolate_count_path",
+        "--isolate_count_paths",
         type=str,
+        nargs="+",
         required=True,
-        help="Path to isolate count table.",
+        help="Path to isolate count tsv.",
     )
     parser.add_argument(
         "-im",
-        "--isolate_metadata_dir",
+        "--isolate_metadata_path",
         type=str,
         required=True,
-        help="Path to isolate metadata directory.",
-    )
-    parser.add_argument(
-        "-pm",
-        "--plate_metadata_path",
-        type=str,
-        required=True,
-        help="Path to plate metadata table.",
+        help="Path to isolate metadata tsv.",
     )
     parser.add_argument(
         "-cm",
@@ -403,9 +358,8 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
-    isolate_count_path = args.isolate_count_path
-    isolate_metadata_dir = args.isolate_metadata_dir
-    plate_metadata_path = args.plate_metadata_path
+    isolate_count_paths = args.isolate_count_paths
+    isolate_metadata_path = args.isolate_metadata_path
     colony_metadata_dir = args.colony_metadata_dir
     min_count = args.min_count
     min_purity = args.min_purity
@@ -416,9 +370,8 @@ if __name__ == "__main__":
     output_path = args.output_path
 
     colony_metadata = read_camii_isolate_data(
-        isolate_count_path,
-        isolate_metadata_dir,
-        plate_metadata_path,
+        isolate_count_paths,
+        isolate_metadata_path,
         colony_metadata_dir,
         min_count=min_count,
         min_purity=min_purity,

@@ -35,45 +35,6 @@ plt.rcParams["pdf.fonttype"] = 42
 ARROWSTYLE = "Simple, tail_width={}, head_width={}, head_length={}"
 
 
-# Reading the FASTA file and filtering sequences
-def filter_sequences(input_fasta, names_to_keep):
-    for record in SeqIO.parse(input_fasta, "fasta"):
-        if record.id in names_to_keep:
-            yield record
-
-
-# Function to run MAFFT
-def run_mafft(input_fasta: str):
-    # MAFFT command
-    mafft_cmd = [f"{os.path.dirname(sys.executable)}/mafft", "--auto", input_fasta]
-    return subprocess.run(mafft_cmd, capture_output=True, text=True)
-
-
-# Function to run RAxML
-def run_raxml(alignment_file: str, output_dir: str):
-    # RAxML command
-    raxml_cmd = [
-        f"{os.path.dirname(sys.executable)}/raxmlHPC",
-        "-s",
-        alignment_file,
-        "-m",
-        "GTRGAMMA",
-        "-f",
-        "a",
-        "-p",
-        "42",
-        "-x",
-        "60",
-        "-N",
-        "100",
-        "-n",
-        "whatever",
-        "-w",
-        output_dir,
-    ]
-    return subprocess.run(raxml_cmd, capture_output=True, text=True, cwd=".")
-
-
 def read_subtree(
     newick_path: str, nodes_of_interest: list[str] = None
 ) -> Phylo.BaseTree.Tree:
@@ -107,51 +68,6 @@ def simplify_name(arr: list[str], max_length: int) -> list[str]:
             new_name += subword
         new_arr.append(new_name)
     return new_arr
-
-
-def process_sequences(
-    zotu_fasta_path, seq_names: list[str], alignment_out: str, tree_out: str
-) -> int:
-    with tempfile.NamedTemporaryFile(
-        mode="w", delete=False, suffix=".fasta"
-    ) as temp_fasta:
-        # Filter and write sequences to a temp file
-        SeqIO.write(
-            filter_sequences(zotu_fasta_path, seq_names),
-            temp_fasta,
-            "fasta",
-        )
-    # Run MAFFT on the temp file
-    mafft_result = run_mafft(temp_fasta.name)
-
-    # Check if MAFFT ran successfully
-    if mafft_result.returncode != 0:
-        print("Error in running MAFFT:", mafft_result.stderr)
-        os.remove(temp_fasta.name)
-        return 1
-    else:
-        print("MAFFT completed successfully. Alignment saved as:", alignment_out)
-
-    # Write MAFFT output to an alignment file
-    with open(alignment_out, "w") as f:
-        f.write(mafft_result.stdout)
-
-    # Run RAxML, output to a temporary directory, copy the tree file to the output path
-    with tempfile.TemporaryDirectory() as temp_dir:
-        raxml_result = run_raxml(alignment_out, temp_dir)
-        tree_file = os.path.join(temp_dir, "RAxML_bestTree.whatever")
-        shutil.copy(tree_file, tree_out)
-
-    # Check if RAxML ran successfully
-    if raxml_result.returncode != 0:
-        print("Error in running RAxML:", raxml_result.stderr)
-        os.remove(temp_fasta.name)
-        return 1
-    else:
-        print("RAxML completed successfully. Tree saved in Newick format as:", tree_out)
-
-    os.remove(temp_fasta.name)
-    return 0
 
 
 def plot_gradient_ring(
@@ -359,7 +275,7 @@ def get_arrow_func(
             arr_start_c = sname2xs[sector_d_sname][donor]
             end = sector_x_to_ax_deg(sname2sector[sector_r_sname], arr_end_c)
             start = sector_x_to_ax_deg(sname2sector[sector_d_sname], arr_start_c)
-            
+
             source_target_set.add((receptor, donor))
             rad_sign = ""
             if (donor, receptor) not in source_target_set:

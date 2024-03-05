@@ -20,11 +20,41 @@ from rich import print as rprint
 from align import Aligner, remove_bad_nodes, network_to_map
 
 
+def _find_plate2dir(data_dir: str) -> dict[str, str]:
+    if any(os.path.isdir(i) for i in glob.glob(f"{data_dir}/*")):
+        # This means the data are generated as a time-series for multiple days where
+        # the names of subdirectories are the date of the experiment, such as `d1`. We
+        # first find all plate barcodes and find the last date for each plate barcode.
+        barcodes2days = defaultdict(list)
+        for subdir in os.listdir(f"{data_dir}"):
+            if not os.path.isdir(f"{data_dir}/{subdir}"):
+                continue
+            d = int(subdir[1:])
+            for f in glob.glob(f"{data_dir}/{subdir}/*_metadata.csv"):
+                barcode = os.path.basename(f).split("_")[0]
+                barcodes2days[barcode].append(d)
+        plate2dir = {}
+        for barcode, days in barcodes2days.items():
+            plate2dir[barcode] = f"{data_dir}/d{max(days)}"
+        return plate2dir
+    else:
+        # if there is no sub directory in data_dir, return all *_metadata.csv where * is a plate barcode
+        plate_barcodes = [
+            os.path.basename(i).split("_")[0]
+            for i in glob.glob(f"{data_dir}/*_metadata.csv")
+        ]
+        return {p: data_dir for p in plate_barcodes}
+
+
 def _read_colony_metadata(colony_metadata_dir: str) -> pd.DataFrame:
     # read colony metadata from CAMII picking pipeline
     colony_metadatas = []
-    for f in glob.glob(f"{colony_metadata_dir}/*_metadata.csv"):
-        df_colony = pd.read_csv(f)
+    for p, f in _find_plate2dir(colony_metadata_dir).items():
+        df_colony = pd.read_csv(os.path.join(f, f"{p}_metadata.csv"))
+        if (df_colony.plate_barcode != p).any():
+            rprint(
+                f"WARNING: plate barcode in colony metadata does not match file name: {p}."
+            )
         df_colony["colony_barcode"] = (
             df_colony.plate_barcode
             + "_"
@@ -33,7 +63,10 @@ def _read_colony_metadata(colony_metadata_dir: str) -> pd.DataFrame:
             + df_colony.center_y.round(3).astype(str)
         )
         df_colony = df_colony.set_index("colony_barcode", verify_integrity=True)
-        colony_metadatas.append(df_colony)
+        if len(df_colony):
+            colony_metadatas.append(df_colony)
+        else:
+            rprint(f"WARNING: No colony metadata found for plate {p}.")
     return pd.concat(colony_metadatas)
 
 
@@ -86,31 +119,34 @@ def _align_isolate_colony(
 ) -> tuple[list[str], pd.Series]:
     isolate2colony = []
     bad_colonies = []
+    aligners = []
     if plate_barcodes is None:
         plate_barcodes = sorted(
             set(colony_metadata[colony_plate_key])
             & set(isolate_metadata[isolate_plate_key])
         )
     for plate in plate_barcodes:
-        print("Working on plate", plate)
+        rprint("Working on plate", plate)
         colony_plate = colony_metadata.query("plate_barcode == @plate")
         isolate_plate = isolate_metadata.query("src_plate == @plate")
         aligner = Aligner()
-        aligner._meta_rgb_colony = colony_plate
+        aligner._meta_rgb = colony_plate
         aligner._meta_isolate = isolate_plate
         query, target = "isolate", "rgb"
-        aligner.fit(query=query, target=target)
+        aligner.fit(query=query, target=target, flip=False)
         aligner.transform(query=query, target=target)
 
-        g = aligner._graph_rgb_isolate
-        h, bad_colony_idx = remove_bad_nodes(g, g.name_top)
+        g = getattr(aligner, f"_graph_{target}_{query}")
+        h = getattr(aligner, f"_graph_{target}_{query}_clean")
+        bad_colony_idx = getattr(aligner, f"_bad_{target}_{query}2{target}_idx")
         map_i2cb = np.where(
-            network_to_map(h)[g.name_bottom] == -1,
+            getattr(aligner, f"_map_{target}_{query}2{target}_clean") == -1,
             np.nan,
             colony_plate.index[aligner._map_rgb_isolate2rgb].to_numpy(),
         )
         bad_colonies.extend(colony_metadata.index[bad_colony_idx].to_list())
         isolate2colony.append(pd.Series(map_i2cb, index=isolate_plate.index))
+        aligners.append(aligner)
 
         if log:
             colony_out_d_count = Counter(
@@ -118,6 +154,9 @@ def _align_isolate_colony(
             )
             isolate_out_d_count = Counter(
                 [v for k, v in h.out_degree() if k.startswith(g.name_bottom)]
+            )
+            colony_in_d_count = Counter(
+                [v for k, v in h.in_degree() if k.startswith(g.name_top)]
             )
             rprint(f"\tPlate {plate} alignment completed.")
             rprint(f"\t\tThe plate has {len(colony_plate)} colonies.")
@@ -127,8 +166,8 @@ def _align_isolate_colony(
             )
             if bad_colony_idx:
                 warnings.warn(
-                    f"\t\t\t{len(bad_colony_idx)} colonies have coliides with other colonies. "
-                    f"These colonies will not be used."
+                    f"\t\t\t{len(bad_colony_idx)} colonies have coliides with other "
+                    "colonies. These colonies will not be used."
                 )
 
             rprint(f"\t\tThe plate has {len(isolate_plate)} isolates.")
@@ -136,17 +175,17 @@ def _align_isolate_colony(
                 f"\t\t\t{isolate_out_d_count[0]} isolates have no paired colony, "
                 f"these isolates will not be used."
             )
-            for i, n in isolate_out_d_count.items():
+            for i, n in colony_in_d_count.items():
                 if i:
                     rprint(f"\t\t\t{n} colonies are picked {i} times.")
     colony_metadata = colony_metadata.drop(bad_colonies)
     isolate_metadata["colony_barcode"] = pd.concat(isolate2colony)
     isolate_metadata = isolate_metadata.dropna(subset=["colony_barcode"])
-    return colony_metadata, isolate_metadata
+    return colony_metadata, isolate_metadata, aligners
 
 
 def read_camii_isolate_data(
-    isolate_count_paths: list[str] | str,
+    isolate_count_path: str,
     isolate_metadata_path: str,
     colony_metadata_dir: str,
     min_count: int = 10,
@@ -163,33 +202,43 @@ def read_camii_isolate_data(
     plates_in_colony = colony_metadata["plate_barcode"].unique()
     # throw warning if there are source plates missing in colony metadata
     no_colony_plates = set(src_plates_in_iso) - set(plates_in_colony)
+    extra_plates = set(plates_in_colony) - set(src_plates_in_iso)
     if no_colony_plates:
         warnings.warn(
             f"Source plates {no_colony_plates} are missing in colony metadata. "
             "Isolates from these plates will not be utilized."
         )
-    colony_metadata, isolate_metadata = _align_isolate_colony(
+    if extra_plates:
+        warnings.warn(
+            f"Plates {extra_plates} are not in isolate metadata, meaning that they "
+            "are not picked. Colonies from these plates will not be utilized."
+        )
+    colony_metadata, isolate_metadata, aligers = _align_isolate_colony(
         colony_metadata, isolate_metadata, plates_in_colony, log=log
     )
 
-    if isinstance(isolate_count_paths, str):
-        isolate_count_paths = [isolate_count_paths]
-    isolate_count = pd.concat(
-        [pd.read_table(i, index_col=0).T for i in isolate_count_paths], axis=1
-    )
+    isolate_count = pd.read_table(isolate_count_path, index_col="sample")
     missing_isolates = np.setdiff1d(isolate_metadata.index, isolate_count.index)
     if missing_isolates.any():
         warnings.warn(
             "Isolates in isolate metadata are not a subset of colonies in isolate count "
             f"table, {len(missing_isolates)} isolates are missing from isolate count table."
         )
+    # isolate_count = pd.concat(
+    #     [
+    #         isolate_count,
+    #         pd.DataFrame(0, index=missing_isolates, columns=isolate_count.columns),
+    #     ],
+    #     axis=0,
+    # ).loc[isolate_metadata.index]
+    isolate_count = isolate_count.loc[isolate_metadata.index]
     isolate_count = pd.concat(
         [
-            isolate_count,
-            pd.DataFrame(0, index=missing_isolates, columns=isolate_count.columns),
+            aligner.agg(query="isolate", target="rgb", data=isolate_count)
+            for aligner in aligers
         ],
         axis=0,
-    ).loc[isolate_metadata.index]
+    )
     isolate_count["colony_barcode"] = isolate_metadata["colony_barcode"]
 
     # do QC for colony
@@ -293,9 +342,8 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "-c",
-        "--isolate_count_paths",
+        "--isolate_count_path",
         type=str,
-        nargs="+",
         required=True,
         help="Path to isolate count tsv.",
     )
@@ -358,7 +406,7 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
-    isolate_count_paths = args.isolate_count_paths
+    isolate_count_path = args.isolate_count_path
     isolate_metadata_path = args.isolate_metadata_path
     colony_metadata_dir = args.colony_metadata_dir
     min_count = args.min_count
@@ -370,7 +418,7 @@ if __name__ == "__main__":
     output_path = args.output_path
 
     colony_metadata = read_camii_isolate_data(
-        isolate_count_paths,
+        isolate_count_path,
         isolate_metadata_path,
         colony_metadata_dir,
         min_count=min_count,

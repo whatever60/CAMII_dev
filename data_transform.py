@@ -17,8 +17,6 @@ from tqdm.auto import trange, tqdm
 import yaml
 
 
-matplotlib.use("TkAgg")
-
 # R_WL, G_WL, B_WL = 700, 550, 450
 R_WL_LOW, R_WL_HIGH, G_WL_LOW, G_WL_HIGH, B_WL_LOW, B_WL_HIGH = (
     680,
@@ -172,7 +170,7 @@ def hsi_pca(
     ret[mask] = image_pca
     ret[~mask] = pca.transform(arr_flat_masked)
     ret = ((ret - qmin) / (qmax - qmin)).clip(0, 1)
-    return ret.reshape(arr.shape[:-1] + (3,)), pca.n_components_
+    return ret.reshape(arr.shape[:-1] + (3,)), pca.components_
 
 
 if __name__ == "__main__":
@@ -180,6 +178,8 @@ if __name__ == "__main__":
     # 1. Convert one hyperspectral image from .bil to .npy
     # python3 bil2numpy.py bil2npy --metadata <hdr_path> bil2npy <bil_path> --output_dir <output_dir>
     # 2. Convert one hyperspectral npy file to png with RGB channels.
+
+    matplotlib.use("TkAgg")
 
     parser = argparse.ArgumentParser(description="Utility for data processing")
     subparsers = parser.add_subparsers(title="subcommands", dest="subcommand")

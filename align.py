@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 
+import glob
 import tempfile
 import json
 from typing import Callable
@@ -291,7 +292,7 @@ def find_affine(
         # weight by distance to origin of query data points after scaling
         weight = query_rescaled[:, 0].abs() + query_rescaled[:, 1].abs()
 
-    iterator = product([True, False], repeat=2) if flip else (False, False)
+    iterator = product([True, False], repeat=2) if flip else [(False, False)]
     # iterator = [(False, True)]
     res = {}
     for h_flip, v_flip in iterator:
@@ -378,10 +379,11 @@ def _find_affine(
             )
         epoch += 1
         if logger.stop_training:
-            params = logger.best_params
-            epoch = logger.best_epoch
-            loss = logger.best_loss
             break
+    # else:
+    #     # if the loop completes without breaking, the training is considered not
+    #     # converged, but parameters at the last epoch are still returned.
+
     return logger
 
 
@@ -401,20 +403,18 @@ def find_mutual_pairs(array_q: np.ndarray, array_t: np.ndarray) -> np.ndarray:
     weight_t2q = (-dist_q_t / temperature).softmax(dim=0)
 
     weights_fwd, best_pairs = weight_q2t.max(dim=1)
-    best_pairs_rev = weight_t2q.max(dim=0)[1]
+    weights_rev = weight_t2q.max(dim=0)[0]
 
     mutual_pairs = np.full(len(array_q), -1)
     for i, (w, p) in enumerate(zip(weights_fwd, best_pairs)):
         w_rev = weight_t2q[i, p]
-        p_rev = best_pairs_rev[p]
         if (
-            p_rev == i
-            and w > min_weight
+            w > min_weight
             and w_rev > min_weight
             and dist_q_t[i, p] < max_dist
+            and torch.isclose(weights_rev[p], w_rev, atol=1e-3)
         ):
             mutual_pairs[i] = p
-
     return mutual_pairs
 
 
@@ -513,33 +513,51 @@ def remove_bad_nodes(G: nx.Graph, remove_from: str) -> tuple[nx.Graph, list[str]
     G.remove_nodes_from(bad_nodes)
     G.add_nodes_from(bad_nodes)
 
-    return G, [int(node[1:]) for node in bad_nodes]
+    return G, [int(node.split("_")[-1]) for node in bad_nodes]
 
 
 class Aligner:
+    modalities = ["rgb", "hsi", "isolate"]
+    modality2marker = {"rgb": "o", "hsi": "x", "isolate": "^"}
+    modality2color = {"rgb": "tab:orange", "hsi": "tab:green", "isolate": "tab:pink"}
+    modality2label = {
+        "rgb": "RGB colony center",
+        "hsi": "HSI colony center",
+        "isolate": "Picked isolates",
+    }
+    modality2mfc = {"rgb": "none", "hsi": None, "isolate": "none"}
+
     def __init__(
         self,
+        plate_barcode: str = "default",
         rgb_png_path: str = None,
-        hsi_npz_path: str = None,
         hsi_png_path: str = None,
-        rgb_colony_meta_path: str = None,  # csv
-        hsi_colony_meta_path: str = None,  # csv
+        hsi_npz_path: str = None,
+        hsi_npz_crop: tuple[tuple[int, int], tuple[int, int]] = None,
+        rgb_meta_path: str = None,  # csv
+        hsi_meta_path: str = None,  # csv
+        rgb_coco_contour_path: str = None,  # json
+        hsi_coco_contour_path: str = None,  # json
         zotu_count_files: list[str] | str = None,  # tsv
         isolate_metadata_file: str = None,  # tsv
     ):
+        self.plate_barcode = plate_barcode
         self.rgb_png_path = rgb_png_path
-        self.hsi_npz_path = hsi_npz_path
         self.hsi_png_path = hsi_png_path
-        self.rgb_colony_meta_path = rgb_colony_meta_path
-        self.hsi_colony_meta_path = hsi_colony_meta_path
+        self.hsi_npz_path = hsi_npz_path
+        self.hsi_npz_crop = hsi_npz_crop
+        self.rgb_meta_path = rgb_meta_path
+        self.hsi_meta_path = hsi_meta_path
+        self.rgb_coco_contour_path = rgb_coco_contour_path
+        self.hsi_coco_contour_path = hsi_coco_contour_path
         self.zotu_count_files = zotu_count_files
         self.isolate_metadata_file = isolate_metadata_file
 
     # def get_coords(self, modality: str) -> np.ndarray:
     #     if modality == "rgb":
-    #         return self.rgb_colony_meta[["center_x", "center_y"]]
+    #         return self.rgb_meta[["center_x", "center_y"]]
     #     elif modality == "hsi":
-    #         return self.hsi_colony_meta[["center_x", "center_y"]]
+    #         return self.hsi_meta[["center_x", "center_y"]]
     #     elif modality == "isolate":
     #         return self.isolate_meta[["src_x", "src_y"]]
     #     else:
@@ -547,7 +565,7 @@ class Aligner:
 
     @property
     def pic_rgb(self) -> np.ndarray:
-        if self._pic_rgb is None:
+        if not hasattr(self, "_pic_rgb"):
             _pic_rgb = cv.imread(self.rgb_png_path)
             if _pic_rgb is None:
                 raise ValueError("rgb_png_path is not specified")
@@ -557,65 +575,105 @@ class Aligner:
 
     @property
     def pic_hsi(self) -> np.ndarray:
-        if self._pic_hsi is None:
-            need_pca = False
-            if self.hsi_png_path is None:
-                need_pca = True
-            else:
+        """Retrive .png picture derived from HSI data. If not available, apply PCA on
+        HSI array.
+        """
+        if not hasattr(self, "_pic_hsi"):
+            if self.hsi_png_path is not None:
                 _pic_hsi = cv.imread(self.hsi_png_path)
-                if _pic_hsi is None:
-                    need_pca = True
-                else:
-                    _pic_hsi = cv.cvtColor(_pic_hsi, cv.COLOR_BGR2RGB)
+                _pic_hsi = cv.cvtColor(_pic_hsi, cv.COLOR_BGR2RGB)
+            else:
+                _pic_hsi = None
 
-            if need_pca:
+            if _pic_hsi is None:
                 msg = "WARNING: hsi_png_path is not specified, applying PCA on HSI "
                 "array as HSI picture"
-                if self.hsi_png_path is not None:
-                    msg += f"and saving to {self.hsi_png_path}"
-                    save_path = self.hsi_png_path
-                else:
-                    save_path = tempfile.mktemp(suffix=".png")
                 print(msg)
-                try:
-                    _pic_hsi, _ = hsi_pca(self.arr_hsi)
-                except ValueError:
+                # if self.hsi_png_path is not None:
+                #     msg += f"and saving to {self.hsi_png_path}"
+                #     save_path = self.hsi_png_path
+                # else:
+                #     save_path = tempfile.mktemp(suffix=".png")
+                if self.arr_hsi is None:
                     raise ValueError("Cannot find either hsi_png_path or hsi_npz_path.")
-                Image.fromarray((_pic_hsi * 255).astype(np.uint8)).save(save_path)
+                from data_transform import hsi_pca
 
+                _pic_hsi, _ = hsi_pca(self.arr_hsi)
             self._pic_hsi = _pic_hsi
         return self._pic_hsi
 
     @property
     def arr_hsi(self) -> np.ndarray:
-        if self._arr_hsi is None:
+        if not hasattr(self, "_arr_hsi"):
             if self.hsi_npz_path is None:
                 raise ValueError("hsi_npz_path is not specified")
-            self._arr_hsi = np.load(self.hsi_npz_path)["data"]
+            _arr_hsi = np.load(self.hsi_npz_path)["data"]
+            if self.hsi_npz_crop is not None:
+                _arr_hsi = _arr_hsi[
+                    slice(*self.hsi_npz_crop[0]), slice(*self.hsi_npz_crop[1])
+                ].copy()
+            self._arr_hsi = _arr_hsi
         return self._arr_hsi
 
     @property
-    def metadata_rgb_colony(self) -> pd.DataFrame:
-        if self._meta_rgb_colony is None:
-            if self.rgb_colony_meta_path is None:
-                raise ValueError("rgb_colony_meta_path is not specified")
-            self._meta_rgb_colony = pd.read_csv(self.rgb_colony_meta_path, sep="\t")
-        return self._meta_rgb_colony
+    def metadata_rgb(self) -> pd.DataFrame:
+        if not hasattr(self, "_meta_rgb"):
+            if self.rgb_meta_path is None:
+                if self.rgb_png_path is None:
+                    raise ValueError(
+                        "Neither rgb_meta_path nor rgb_png_path is specified, "
+                        "cannot load metadata."
+                    )
+                else:
+                    print(
+                        "WARNING: RGB colony metadata not available, detecting colonies "
+                        "using the picture."
+                    )
+                    from detect_colonies import detect_colony_single
+
+                    output_dir = tempfile.mkdtemp()
+                    detect_colony_single(self.rgb_png_path, output_dir)
+                    self.rgb_meta_path = glob.glob(f"{output_dir}/*_metadata.csv")[0]
+            _meta_rgb = pd.read_csv(self.rgb_meta_path)
+            if "picking_status" in _meta_rgb.columns:
+                _meta_rgb = _meta_rgb.query("picking_status == 1")
+            self._meta_rgb = _meta_rgb
+        return self._meta_rgb
 
     @property
-    def metadata_hsi_colony(self) -> pd.DataFrame:
-        if self._meta_hsi_colony is None:
-            if self.hsi_colony_meta_path is None:
-                raise ValueError("hsi_colony_meta_path is not specified")
-            self._meta_hsi_colony = pd.read_csv(self.hsi_colony_meta_path, sep="\t")
-        return self._meta_hsi_colony
+    def metadata_hsi(self) -> pd.DataFrame:
+        """Similar to self.metadata_rgb, but for HSI data."""
+        if not hasattr(self, "_meta_hsi"):
+            if self.hsi_meta_path is None:
+                if self.hsi_png_path is None:
+                    raise ValueError(
+                        "Neither hsi_meta_path nor hsi_png_path is specified, "
+                        "cannot load metadata."
+                    )
+                else:
+                    print(
+                        "WARNING: HSI colony metadata not available, detecting colonies "
+                        "using the picture."
+                    )
+                    from detect_colonies import detect_colony_single
+
+                    output_dir = tempfile.mkdtemp()
+                    detect_colony_single(self.hsi_png_path, output_dir)
+                    self.hsi_meta_path = glob.glob(f"{output_dir}/*_metadata.csv")[0]
+            _meta_hsi = pd.read_csv(self.hsi_meta_path)
+            if "picking_status" in _meta_hsi.columns:
+                _meta_hsi = _meta_hsi.query("picking_status == 1")
+            self._meta_hsi = _meta_hsi
+        return self._meta_hsi
 
     @property
     def metadata_isolate(self) -> pd.DataFrame:
-        if self._meta_isolate is None:
+        if not hasattr(self, "_meta_isolate"):
             if self.isolate_metadata_file is None:
                 raise ValueError("isolate_metadata_file is not specified")
-            self._meta_isolate = pd.read_csv(self.isolate_metadata_file, sep="\t")
+            self._meta_isolate = pd.read_table(
+                self.isolate_metadata_file, index_col="sample"
+            ).query("src_plate == @self.plate_barcode")
         return self._meta_isolate
 
     @property
@@ -624,33 +682,125 @@ class Aligner:
 
     @property
     def coords_rgb(self) -> np.ndarray:
-        return self.metadata_rgb_colony[["center_x", "center_y"]].to_numpy()
+        return self.metadata_rgb[["center_x", "center_y"]].to_numpy()
 
     @property
     def coords_hsi(self) -> np.ndarray:
-        return self.metadata_hsi_colony[["center_x", "center_y"]].to_numpy()
+        return self.metadata_hsi[["center_x", "center_y"]].to_numpy()
 
     @property
     def contours_rgb(self) -> list[np.ndarray]:
-        if self._contours_rgb is None:
-            if self.rgb_png_path is None:
-                raise ValueError("rgb_png_path is not specified")
-            self._contours_rgb = _load_coco_to_contour(self.rgb_png_path)
+        if not hasattr(self, "_contours_rgb"):
+            if self.rgb_coco_contour_path is None:
+                if self.rgb_png_path is None:
+                    raise ValueError(
+                        "Neither rgb_coco_contour_path nor rgb_png_path is specified, "
+                        "cannot load contours."
+                    )
+                else:
+                    print(
+                        "WARNING: RGB colony contours not available, detecting colonies "
+                        "using the picture."
+                    )
+                    from detect_colonies import detect_colony_single
+
+                    output_dir = tempfile.mkdtemp()
+                    detect_colony_single(self.rgb_png_path, output_dir)
+                    self.rgb_coco_contour_path = glob.glob(
+                        f"{output_dir}/*_annot.json"
+                    )[0]
+            _contours_rgb = _load_coco_to_contour(self.rgb_coco_contour_path)
+            if "picking_status" in self.metadata_rgb.columns:
+                _contours_rgb = [
+                    c
+                    for c, status in zip(
+                        _contours_rgb, self.metadata_rgb["picking_status"]
+                    )
+                    if status == 1
+                ]
+            self._contours_rgb = _contours_rgb
         return self._contours_rgb
 
     @property
     def contours_hsi(self) -> list[np.ndarray]:
-        if self._contours_hsi is None:
-            if self.hsi_png_path is None:
-                raise ValueError("hsi_png_path is not specified")
-            self._contours_hsi = _load_coco_to_contour(self.hsi_png_path)
+        if not hasattr(self, "_contours_hsi"):
+            if self.hsi_coco_contour_path is None:
+                if self.hsi_png_path is None:
+                    raise ValueError(
+                        "Neither hsi_coco_contour_path nor hsi_png_path is specified, "
+                        "cannot load contours."
+                    )
+                else:
+                    print(
+                        "WARNING: HSI colony contours not available, detecting colonies "
+                        "using the picture."
+                    )
+                    from detect_colonies import detect_colony_single
+
+                    output_dir = tempfile.mkdtemp()
+                    detect_colony_single(self.hsi_png_path, output_dir)
+                    self.hsi_coco_contour_path = glob.glob(
+                        f"{output_dir}/*_annot.json"
+                    )[0]
+            _contours_hsi = _load_coco_to_contour(self.hsi_coco_contour_path)
+            if "picking_status" in self.metadata_hsi.columns:
+                _contours_hsi = [
+                    c
+                    for c, status in zip(
+                        _contours_hsi, self.metadata_hsi["picking_status"]
+                    )
+                    if status == 1
+                ]
+            self._contours_hsi = _contours_hsi
         return self._contours_hsi
 
-    def align(self, query: str, target: str) -> None:
+    def fit(
+        self,
+        query: str,
+        target: str,
+        hparams: dict[str, float] = None,
+        flip: bool = True,
+        mean_q: np.ndarray = None,
+        std_q: np.ndarray = None,
+        mean_t: np.ndarray = None,
+        std_t: np.ndarray = None,
+    ) -> None:
         coords_q = getattr(self, f"coords_{query}")
         coords_t = getattr(self, f"coords_{target}")
-        q2t_params, *q2t_stats = find_affine(coords_q, coords_t)
-        q2t_func = get_query2target_func(*q2t_params, *q2t_stats)
+        # if query and target are rgb and hsi or the other way around, and both have
+        # picture, normalize them using the picture size so that the longer axis is 3.
+        if set([query, target]) == {"rgb", "hsi"}:
+            pic_q = getattr(self, f"pic_{query}")
+            pic_t = getattr(self, f"pic_{target}")
+            mean_q = np.array(pic_q.shape[:2][::-1]) / 2
+            mean_t = np.array(pic_t.shape[:2][::-1]) / 2
+            std_q = np.array(pic_q.shape[:2][::-1]) / 3
+            std_t = np.array(pic_t.shape[:2][::-1]) / 3
+        if (query, target) == ("isolate", "rgb"):
+            robot_factor = 0.065
+            mean_q = coords_t.mean(axis=0) * robot_factor
+            std_q = coords_t.std(axis=0) * robot_factor
+
+        q2t_params, *q2t_stats, q2t_flip = find_affine(
+            coords_q,
+            coords_t,
+            log=False,
+            flip=flip,
+            mean_q=mean_q,
+            std_q=std_q,
+            mean_t=mean_t,
+            std_t=std_t,
+            hparams=hparams,
+        )
+        self.temp_params = q2t_params
+        self.temp_stats = q2t_stats
+        q2t_func = get_query2target_func(*q2t_params, *q2t_stats, q2t_flip)
+        setattr(self, f"_q2t_func_{target}_{query}", q2t_func)
+
+    def transform(self, query: str, target: str) -> np.ndarray:
+        coords_q = getattr(self, f"coords_{query}")
+        coords_t = getattr(self, f"coords_{target}")
+        q2t_func = getattr(self, f"_q2t_func_{target}_{query}")
         coords_q2t = q2t_func(coords_q)
         map_t2q = find_mutual_pairs(coords_t, coords_q2t)
         map_q2t = find_mutual_pairs(coords_q2t, coords_t)
@@ -660,45 +810,149 @@ class Aligner:
             name_top=f"{target}_{target}",
             name_bottom=f"{target}_{query}",
         )
+        h, bad_target_idx = remove_bad_nodes(g, g.name_top)
+        map_q2t_clean = network_to_map(h)[g.name_bottom]
         setattr(self, f"_coords_{query}2{target}", coords_q2t)
         setattr(self, f"_map_{target}_{query}2{target}", map_q2t)
         setattr(self, f"_map_{target}_{target}2{query}", map_t2q)
         setattr(self, f"_graph_{target}_{query}", g)
+        setattr(self, f"_graph_{target}_{query}_clean", h)
+        setattr(self, f"_bad_{target}_{query}2{target}_idx", bad_target_idx)
+        setattr(self, f"_map_{target}_{query}2{target}_clean", map_q2t_clean)
+
+    def agg(self, query: str, target: str, data: pd.DataFrame) -> pd.DataFrame:
+        """Take a DataFrame with rows corresponding to the query modality, and aggregate
+        by adding so that in the returned dataframe, each row corresponds to the target.
+        Index of the returned dataframe is retrieved from the target modality.
+
+        Raise error indicating `transform` must be called before `agg` if necessary
+        attributes are not found.
+        """
+        try:
+            map_q2t_clean = getattr(self, f"_map_{target}_{query}2{target}_clean")
+        except AttributeError:
+            raise AttributeError(
+                f"`transform` query modality {query} to target modality {target} before `agg`."
+            )
+        # reorder data according to metadata of query modality
+        good_query = map_q2t_clean != -1
+        data = data.loc[getattr(self, f"metadata_{query}").index].iloc[good_query]
+        ind = getattr(self, f"metadata_{target}").index.to_numpy()
+        data_agg = data.groupby(ind[map_q2t_clean[good_query]]).sum()
+        # fill in missing rows with 0
+        data_agg = data_agg.reindex(ind, fill_value=0)
+        return data_agg
+
+    def crop(
+        self,
+        modality: str,
+        index: int,
+        size: int = 0,
+        padding: int | float = 0,
+        add_contour: str = "none",
+        _use_arr: bool = False,
+    ) -> np.ndarray:
+        """Crop out a square image patch around the index-th contour center of the
+        specified modality.
+
+        Padding could be added to the patch when size is not given.
+            If padding is 0, no padding is added, the patch is cropped such that it's
+                the smallest square that includes all pixels within contour.
+            When padding is int, it is the number of pixels to add to each side of the
+                patch.
+            When padding is float, it is the fraction of the patch size to add to each
+                side of the patch.
+
+        Contour of selected colony or all colonies could be added. Convineint for
+            plotting.
+        """
+        if modality == "isolate":
+            raise ValueError("Isolate has no background image or contours to crop.")
+        if not modality in self.modalities:
+            raise ValueError(
+                f"modality should be one of {self.modalities}, got {modality}"
+            )
+        contours = getattr(self, f"contours_{modality}")
+        x, y, w, h = cv.boundingRect(contours[index])
+        size = max(w, h) if not size else size
+        # center = getattr(self, f"metadata_{modality}_colony").loc[
+        #     index, ["center_x", "center_y"]
+        # ]
+        center = np.array([x + w / 2, y + h / 2])
+        if isinstance(padding, int):
+            size += 2 * padding
+        elif isinstance(padding, float):
+            size *= 1 + padding
+        size = int(size)
+        ret = getattr(self, f"pic_{modality}").copy()
+        if add_contour == "self":
+            cv.drawContours(ret, contours, index, (0, 0, 0), 1)
+            mask = None
+        elif add_contour == "all":
+            cv.drawContours(ret, contours, -1, (0, 0, 0), 1)
+            mask = None
+        elif add_contour == "mask":  # mask as -1 except for the selected contour
+            mask = np.zeros(ret.shape[:2], dtype=np.uint8)
+            cv.fillPoly(mask, [contours[index]], 1)
+            ret = ret.astype(int)
+            ret[mask == 0] = -1
+        ret = self._crop_at(ret, center, size)
+
+        if modality == "hsi" and _use_arr:
+            ret_arr = self._crop_at(self.arr_hsi, center, size).copy()
+            if mask is not None:
+                ret_arr = ret_arr.astype(int)
+                mask = self._crop_at(mask, center, size)
+                ret_arr[mask == 0] = -1
+            ret = ret_arr
+        return ret
+
+    @staticmethod
+    def _crop_at(arr: np.ndarray, center: tuple[float, float], size: int) -> np.ndarray:
+        x, y = center
+        x_start = max(0, x - size / 2)
+        y_start = max(0, y - size / 2)
+        x_start = int(np.round(x_start))
+        y_start = int(np.round(y_start))
+        x_end = x_start + size
+        y_end = y_start + size
+        x_end = min(arr.shape[1], x_end)
+        y_end = min(arr.shape[0], y_end)
+        return arr[y_start:y_end, x_start:x_end]
 
     def plot(
         self,
         modality_ref: str,
-        modalities: list[str],
-        marker_size: int = 6,
+        modalities_other: list[str] | str = (),
+        marker_size: int = 4,
         modality2color: dict[str, str] = None,
         modality2marker: dict[str, str] = None,
-        modality2labels: dict[str, str] = None,
+        modality2label: dict[str, str] = None,
         plot_bg: bool = True,
         plot_contours: bool = False,  # whether to plot contours of reference modality
         contour_width: int = 2,
         *,
         ax: plt.Axes,
     ) -> None:
+        if isinstance(modalities_other, str):
+            modalities_other = [modalities_other]
+        modalities_other = list(modalities_other)
         # argument sanity check
-        if not modalities in ["rgb", "hsi", "isolate"]:
-            raise ValueError("modalities should be a list of ['rgb', 'hsi', 'isolate']")
+        for m in [modality_ref] + modalities_other:
+            if not m in self.modalities:
+                raise ValueError(
+                    f"Modalities should be a list of {self.modalities}, got {m}"
+                )
         if modality_ref == "isolate":
             if plot_bg or plot_contours:
                 raise ValueError("Isolate has no background image or contours to show.")
         if modality2color is None:
-            modality2color = {
-                "rgb": "tab:blue",
-                "hsi": "tab:orange",
-                "isolate": "tab:green",
-            }
+            modality2color = self.modality2color
         if modality2marker is None:
-            modality2marker = {"rgb": "x", "hsi": "o", "isolate": "^"}
-        if modality2labels is None:
-            modality2labels = {
-                "rgb": "RGB colony center",
-                "hsi": "HSI colony center",
-                "isolate": "Picked isolates",
-            }
+            modality2marker = self.modality2marker
+        if modality2label is None:
+            modality2label = self.modality2label
+
         if plot_bg:
             img = getattr(self, f"pic_{modality_ref}").copy()
             if plot_contours:
@@ -710,19 +964,23 @@ class Aligner:
                     contour_width,
                 )
             ax.imshow(img)
+
         coods_list = [getattr(self, f"coords_{modality_ref}")] + [
-            getattr(self, f"_coords_{modality_ref}2{modality}")
-            for modality in modalities
+            getattr(self, f"_coords_{modality}2{modality_ref}")
+            for modality in modalities_other
         ]
-        for modality, coords in zip([modality_ref] + modalities, coods_list):
-            ax.scatter(
+        for modality, coords in zip([modality_ref] + modalities_other, coods_list):
+            ax.plot(
                 coords[:, 0],
                 coords[:, 1],
                 c=modality2color[modality],
                 marker=modality2marker[modality],
+                label=modality2label[modality],
+                linestyle="none",
                 ms=marker_size,
-                mew=marker_size / 10,
-                label=modality,
+                mew=marker_size / 5,
+                mfc=self.modality2mfc[modality],
+                alpha=0.9,
             )
         ax.legend()
         ax.legend(bbox_to_anchor=(1.05, 1), loc="upper left")

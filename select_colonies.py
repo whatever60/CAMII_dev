@@ -54,9 +54,6 @@ from tqdm.auto import tqdm, trange
 from utils import read_config, add_contours, _coco_to_contours
 
 
-matplotlib.use("TkAgg")
-
-
 def colony_feat_pca(df_contour: pl.DataFrame) -> pl.DataFrame:
     feats_for_pca = [
         "area",
@@ -1016,6 +1013,8 @@ if __name__ == "__main__":
     #     # tsp_method="heuristic",
     #     tsp_method="",
     # )
+    matplotlib.use("TkAgg")
+
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="command")
 

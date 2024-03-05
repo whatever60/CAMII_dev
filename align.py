@@ -119,7 +119,7 @@ def loss_function(
     )
 
 
-def soft_mnn_consistency(cdist: torch.Tensor, temperature: float = 1.0) -> torch.Tensor:
+def soft_mnn_consistency(cdist: torch.Tensor, temperature: float = 1) -> torch.Tensor:
     """Compute consistency score between two arrays of keypoints.
 
     The consistency score is defined as the average of the softmax of the negative
@@ -392,7 +392,7 @@ def find_mutual_pairs(array_q: np.ndarray, array_t: np.ndarray) -> np.ndarray:
     of mutual nearest neighbors in the second array for each keypoint in the first
     array. If no mutual nearest neighbor is found, the index is -1.
     """
-    min_weight = 0.2
+    min_weight = 0.1
     max_dist = 15
     temperature = 20
 
@@ -777,7 +777,7 @@ class Aligner:
             std_q = np.array(pic_q.shape[:2][::-1]) / 3
             std_t = np.array(pic_t.shape[:2][::-1]) / 3
         if (query, target) == ("isolate", "rgb"):
-            robot_factor = 0.065
+            robot_factor = 0.066
             mean_q = coords_t.mean(axis=0) * robot_factor
             std_q = coords_t.std(axis=0) * robot_factor
 
@@ -836,7 +836,7 @@ class Aligner:
             )
         # reorder data according to metadata of query modality
         good_query = map_q2t_clean != -1
-        data = data.loc[getattr(self, f"metadata_{query}").index].iloc[good_query]
+        data = data.loc[getattr(self, f"metadata_{query}").iloc[good_query].index]
         ind = getattr(self, f"metadata_{target}").index.to_numpy()
         data_agg = data.groupby(ind[map_q2t_clean[good_query]]).sum()
         # fill in missing rows with 0

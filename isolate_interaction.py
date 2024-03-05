@@ -203,6 +203,7 @@ def read_camii_isolate_data(
     # throw warning if there are source plates missing in colony metadata
     no_colony_plates = set(src_plates_in_iso) - set(plates_in_colony)
     extra_plates = set(plates_in_colony) - set(src_plates_in_iso)
+    plates_in_colony = sorted(set(plates_in_colony) & set(src_plates_in_iso))
     if no_colony_plates:
         warnings.warn(
             f"Source plates {no_colony_plates} are missing in colony metadata. "
@@ -210,20 +211,49 @@ def read_camii_isolate_data(
         )
     if extra_plates:
         warnings.warn(
-            f"Plates {extra_plates} are not in isolate metadata, meaning that they "
+            f"Colony plates {extra_plates} are not in isolate metadata, meaning that they "
             "are not picked. Colonies from these plates will not be utilized."
         )
     colony_metadata, isolate_metadata, aligers = _align_isolate_colony(
         colony_metadata, isolate_metadata, plates_in_colony, log=log
     )
 
-    isolate_count = pd.read_table(isolate_count_path, index_col="sample")
+    isolate_count = pd.read_table(isolate_count_path, index_col=0)
     missing_isolates = np.setdiff1d(isolate_metadata.index, isolate_count.index)
     if missing_isolates.any():
         warnings.warn(
             "Isolates in isolate metadata are not a subset of colonies in isolate count "
             f"table, {len(missing_isolates)} isolates are missing from isolate count table."
         )
+    isolate_count = isolate_count.loc[isolate_metadata.index]
+
+    colony_count = pd.concat(
+        [
+            aligner.agg(query="isolate", target="rgb", data=isolate_count)
+            for aligner in aligers
+        ],
+        axis=0,
+    )
+    total_count = colony_count.sum(axis=1)
+    purity = colony_count.max(axis=1) / total_count
+    good_isolates = np.logical_and(total_count >= min_count, purity >= min_purity)
+    colony_count = colony_count.loc[good_isolates]
+
+    colony_metadata = colony_metadata.loc[colony_count.index]
+    colony_metadata["otu"] = colony_count.idxmax(axis=1).to_numpy()
+
+    # do QC for ZOTUs.
+    otu_count = colony_metadata.value_counts("otu")
+    high_ab_otu = otu_count[otu_count >= min_count].index
+    colony_metadata = colony_metadata.query("otu in @high_ab_otu")
+    if log:
+        rprint(
+            f"{sum(~good_isolates)} isolates are filtered out by QC, {sum(good_isolates)} are left."
+        )
+        rprint(
+            f"{len(otu_count) - len(high_ab_otu)} ZOTUs are filtered out by QC, {len(high_ab_otu)} are left."
+        )
+    return colony_metadata
     # isolate_count = pd.concat(
     #     [
     #         isolate_count,
@@ -231,25 +261,26 @@ def read_camii_isolate_data(
     #     ],
     #     axis=0,
     # ).loc[isolate_metadata.index]
+    # reorder
     isolate_count = isolate_count.loc[isolate_metadata.index]
-    isolate_count = pd.concat(
+    colony_count = pd.concat(
         [
             aligner.agg(query="isolate", target="rgb", data=isolate_count)
             for aligner in aligers
         ],
         axis=0,
     )
-    isolate_count["colony_barcode"] = isolate_metadata["colony_barcode"]
+    # isolate_count["colony_barcode"] = isolate_metadata["colony_barcode"]
 
     # do QC for colony
-    isolate_count = isolate_count.groupby("colony_barcode").sum()
-    total_count = isolate_count.sum(axis=1)
-    purity = isolate_count.max(axis=1) / total_count
+    # isolate_count = isolate_count.groupby("colony_barcode").sum()
+    total_count = colony_count.sum(axis=1)
+    purity = colony_count.max(axis=1) / total_count
     good_isolates = np.logical_and(total_count >= min_count, purity >= min_purity)
-    isolate_count = isolate_count.loc[good_isolates]
+    colony_count = colony_count.loc[good_isolates]
 
-    colony_metadata = colony_metadata.loc[isolate_count.index]
-    colony_metadata["otu"] = isolate_count.idxmax(axis=1).to_numpy()
+    colony_metadata = colony_metadata.loc[colony_count.index]
+    colony_metadata["otu"] = colony_count.idxmax(axis=1).to_numpy()
 
     # do QC for ZOTUs.
     otu_count = colony_metadata.value_counts("otu")
@@ -429,7 +460,9 @@ if __name__ == "__main__":
         max_dist=max_dist,
     )
     interaction_df = interaction_df.query(
-        "(fc >= @min_fc or fc <= 1/@min_fc) and num_interactions >= @min_num_interactions"
+        "(fc >= @min_fc or fc <= 1/@min_fc) "
+        "and num_interactions >= @min_num_interactions "
+        "and pval >= 0"
     )
     interaction_df["qval"] = false_discovery_control(interaction_df["pval"])
     interaction_df = interaction_df.query("qval <= @max_qval")

@@ -580,7 +580,7 @@ def read_isolate_interaction(
     )
     node_df = node_df.set_index("otu")
     node_df["label"] = (
-        node_df.index.map(lambda x: x.split("-")[1])
+        node_df.index.map(lambda x: x.rsplit("-", 1)[-1])
         + "\n"
         + simplify_name(node_df[label_by].tolist(), max_length=8)
     )
@@ -745,7 +745,7 @@ if __name__ == "__main__":
             leaf_names = [i.name for i in tree.get_terminals()]
 
             # Add sector title
-            # add_title(sector, fontsize=sector_title_fontsize)
+            add_title(sector, fontsize=sector_title_fontsize)
             add_tree(sector, r_lim=r_lim_tree, tree=tree)
 
             # Add bar plot

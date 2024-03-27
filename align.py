@@ -173,6 +173,37 @@ def affine_transform(params: torch.Tensor, keypoints: torch.Tensor):
     return transformed_keypoints
 
 
+def affine_transform_rev(params: torch.Tensor, keypoints: torch.Tensor):
+    """Apply the reverse affine transformation to keypoints, i.e., the reverse
+    transformation of `affine_transform`.
+
+    The transformation consistsof:
+    - translation
+    - rotation and scaling around origin (hence order doesn't matter)
+    """
+    a, b, tx, ty, sx, sy = params
+    norm = torch.sqrt(a**2 + b**2)
+    sin_t, cos_t = (
+        b / norm,
+        a / norm,
+    )  # Same as forward because rotation matrix is orthogonal
+
+    # Inverse translation
+    keypoints_translated_back = keypoints - torch.stack([tx, ty])
+
+    # Inverse rotation and scaling
+    sx_inv, sy_inv = 1 / sx, 1 / sy  # Inverse scaling factors
+    transformed_keypoints_rev = keypoints_translated_back @ torch.stack(
+        [
+            torch.stack([sx_inv * cos_t, sx_inv * sin_t]),
+            torch.stack([-sy_inv * sin_t, sy_inv * cos_t]),
+        ],
+        dim=0,
+    )
+
+    return transformed_keypoints_rev
+
+
 def _affine_transform_equation(params: torch.Tensor, flip: tuple[bool, bool]) -> str:
     # turn into string, 3 decimal places
     a, b, tx, ty, sx, sy = params
@@ -240,6 +271,34 @@ def get_query2target_func(
             torch.tensor([a, b, tx, ty, sx, sy]), flip_tensor(query_std, *flip)
         )
         mapped_std = query_mapped_std * std_t + mean_t
+        return mapped_std.numpy()
+
+    return ret
+
+
+def get_query2target_func_rev(
+    a: torch.Tensor,
+    b: torch.Tensor,
+    tx: torch.Tensor,
+    ty: torch.Tensor,
+    sx: torch.Tensor,
+    sy: torch.Tensor,
+    mean_q: torch.Tensor,
+    std_q: torch.Tensor,
+    mean_t: torch.Tensor,
+    std_t: torch.Tensor,
+    flip: tuple[bool, bool] = (False, False),
+) -> Callable:
+    """Return a function that maps target to query, i.e., the reverse transformation
+    of `get_query2target_func`.
+    """
+
+    def ret(target: np.ndarray) -> np.ndarray:
+        target_std = torch.from_numpy((target - mean_t) / std_t).float()
+        target_mapped_std = affine_transform_rev(
+            torch.tensor([a, b, tx, ty, sx, sy]), flip_tensor(target_std, *flip)
+        )
+        mapped_std = target_mapped_std * std_q + mean_q
         return mapped_std.numpy()
 
     return ret
@@ -792,15 +851,15 @@ class Aligner:
             std_t=std_t,
             hparams=hparams,
         )
-        self.temp_params = q2t_params
-        self.temp_stats = q2t_stats
         q2t_func = get_query2target_func(*q2t_params, *q2t_stats, q2t_flip)
-        setattr(self, f"_q2t_func_{target}_{query}", q2t_func)
+        t2q_func = get_query2target_func_rev(*q2t_params, *q2t_stats, q2t_flip)
+        setattr(self, f"_func_{target}_{query}2{target}", q2t_func)
+        setattr(self, f"_func_{target}_{target}2{query}", t2q_func)
 
     def transform(self, query: str, target: str) -> np.ndarray:
         coords_q = getattr(self, f"coords_{query}")
         coords_t = getattr(self, f"coords_{target}")
-        q2t_func = getattr(self, f"_q2t_func_{target}_{query}")
+        q2t_func = getattr(self, f"_func_{target}_{query}2{target}")
         coords_q2t = q2t_func(coords_q)
         map_t2q = find_mutual_pairs(coords_t, coords_q2t)
         map_q2t = find_mutual_pairs(coords_q2t, coords_t)
@@ -849,6 +908,7 @@ class Aligner:
         index: int,
         size: int = 0,
         padding: int | float = 0,
+        modality_q: str = None,
         add_contour: str = "none",
         _use_arr: bool = False,
     ) -> np.ndarray:
@@ -866,39 +926,60 @@ class Aligner:
         Contour of selected colony or all colonies could be added. Convineint for
             plotting.
         """
-        if modality == "isolate":
+        if modality_q == "isolate":
             raise ValueError("Isolate has no background image or contours to crop.")
         if not modality in self.modalities:
             raise ValueError(
                 f"modality should be one of {self.modalities}, got {modality}"
             )
-        contours = getattr(self, f"contours_{modality}")
-        x, y, w, h = cv.boundingRect(contours[index])
-        size = max(w, h) if not size else size
-        # center = getattr(self, f"metadata_{modality}_colony").loc[
-        #     index, ["center_x", "center_y"]
-        # ]
-        center = np.array([x + w / 2, y + h / 2])
+        if modality_q is None:
+            modality_q = modality
+        if modality == modality_q:
+            contours = getattr(self, f"contours_{modality}")
+            x, y, w, h = cv.boundingRect(contours[index])
+            size = max(w, h) if not size else size
+            center = np.array([x + w / 2, y + h / 2])
+        else:
+            if not size:
+                raise ValueError(
+                    "size should be given when modality is not the reference modality."
+                )
+            else:
+                center = getattr(self, f"_func_{modality}_{modality}2{modality_q}")(
+                    getattr(self, f"coords_{modality}")[index]
+                )
+
         if isinstance(padding, int):
             size += 2 * padding
         elif isinstance(padding, float):
             size *= 1 + padding
         size = int(size)
-        ret = getattr(self, f"pic_{modality}").copy()
-        if add_contour == "self":
-            cv.drawContours(ret, contours, index, (0, 0, 0), 1)
+        ret = getattr(self, f"pic_{modality_q}").copy()
+        if modality == modality_q:
+            if add_contour == "self":
+                cv.drawContours(ret, contours, index, (0, 0, 0), 1)
+                mask = None
+            elif add_contour == "all":
+                cv.drawContours(ret, contours, -1, (0, 0, 0), 1)
+                mask = None
+            elif add_contour == "mask":  # mask as -1 except for the selected contour
+                mask = np.zeros(ret.shape[:2], dtype=np.uint8)
+                cv.fillPoly(mask, [contours[index]], 1)
+                ret = ret.astype(int)
+                ret[mask == 0] = -1
+            else:
+                mask = None
+        else:
+            if add_contour != "none":
+                raise ValueError(
+                    "add_contour should be 'none' when modality is not the reference."
+                )
             mask = None
-        elif add_contour == "all":
-            cv.drawContours(ret, contours, -1, (0, 0, 0), 1)
-            mask = None
-        elif add_contour == "mask":  # mask as -1 except for the selected contour
-            mask = np.zeros(ret.shape[:2], dtype=np.uint8)
-            cv.fillPoly(mask, [contours[index]], 1)
-            ret = ret.astype(int)
-            ret[mask == 0] = -1
         ret = self._crop_at(ret, center, size)
 
-        if modality == "hsi" and _use_arr:
+        if (
+            ((not modality_q) and modality == "hsi") or modality_q == "hsi"
+        ) and _use_arr:
             ret_arr = self._crop_at(self.arr_hsi, center, size).copy()
             if mask is not None:
                 ret_arr = ret_arr.astype(int)

@@ -93,8 +93,10 @@ def plot_gradient_ring(
     end_color (str): The color at the end of the gradient.
     """
     if not -360 < start_angle < 360 or not -360 < end_angle < 360:
-        raise ValueError("Start and end angles must be between -360 and 360 degrees.")
-    if not start_angle < end_angle:
+        raise ValueError(
+            f"Start {start_angle} and end {end_angle} angles must be between -360 and 360 degrees."
+        )
+    if not start_angle <= end_angle:
         raise ValueError(
             f"Start angle ({start_angle}) must be less than end angle ({end_angle})."
         )
@@ -155,20 +157,23 @@ def get_fill_between_sectors_func(
         bounds = [0, 0, 1, 1]
         axin = ax.inset_axes(bounds)
         axin.axis("off")
-        sector1s = [sectors[-1]] + sectors[:-1]
-        sector2s = sectors
-        fc1s = [fcs[-1]] + fcs[:-1]
-        fc2s = fcs
+        sectors_nonempty = [sector for sector in sectors if sector.size]
+        fcs_nonempty = [fc for sector, fc in zip(sectors, fcs) if sector.size]
+        sector1s = [sectors_nonempty[-1]] + sectors_nonempty[:-1]
+        sector2s = sectors_nonempty
+        fc1s = [fcs_nonempty[-1]] + fcs_nonempty[:-1]
+        fc2s = fcs_nonempty
         fc1s, fc2s = fc2s, fc1s
-        for sector1, sector2, fc1, fc2 in zip(sector1s, sector2s, fc1s, fc2s):
-            start = sector_x_to_ax_deg(sector2, 0)
-            end = sector_x_to_ax_deg(sector1, sector1.size)
-            if start > end:
-                end += 360
-            ri, ro = sector_r_to_ax_r(r1), sector_r_to_ax_r(r2)
-            plot_gradient_ring(axin, start, end, ri, ro, fc1, fc2, alpha)
+        if len(sectors_nonempty) > 1:
+            for sector1, sector2, fc1, fc2 in zip(sector1s, sector2s, fc1s, fc2s):
+                start = sector_x_to_ax_deg(sector2, 0)
+                end = sector_x_to_ax_deg(sector1, sector1.size)
+                if start > end:
+                    end += 360
+                ri, ro = sector_r_to_ax_r(r1), sector_r_to_ax_r(r2)
+                plot_gradient_ring(axin, start, end, ri, ro, fc1, fc2, alpha)
 
-        for sector, fc in zip(sectors, fcs):
+        for sector, fc in zip(sectors_nonempty, fcs_nonempty):
             end = sector_x_to_ax_deg(sector, 0)
             start = sector_x_to_ax_deg(sector, sector.size)
             if start > end:
@@ -547,23 +552,36 @@ def normalize_to(
 
 def read_isolate_interaction(
     interaction_csv: str,
-    taxon_16s_tsv: str,
-    taxon_its_tsv: str,
-    tree_16s_tsv: str,
-    tree_its_tsv: str,
-    label_by: str,
-    color_by: str,
-    cmap: str,
+    colony_metadata_csv: str = None,
+    taxon_16s_tsv: str = None,
+    taxon_its_tsv: str = None,
+    tree_16s_tsv: str = None,
+    tree_its_tsv: str = None,
+    label_by: str = "genus",
+    color_by: str = "family",
+    cmap: str = "tab20",
 ) -> tuple[pd.DataFrame, pd.DataFrame, Phylo.BaseTree.Tree, Phylo.BaseTree.Tree]:
     interaction_df = pd.read_csv(interaction_csv)
-    node_df = interaction_df.loc[interaction_df["donor"].isna()].copy().dropna(axis=1)
-    node_df.columns = ["otu", "count"]
-    node_df = node_df.set_index("otu")
-    interaction_df = interaction_df.loc[~interaction_df["donor"].isna()].copy()
+    if colony_metadata_csv is not None:
+        colony_metadata_df = pd.read_csv(colony_metadata_csv)
+        zotus_in_interaction = sorted(
+            set(interaction_df.receptor.unique()) | set(interaction_df.donor.unique())
+        )
+        node_df = (
+            colony_metadata_df.value_counts("otu").loc[zotus_in_interaction].to_frame()
+        )
+    else:
+        node_df = (
+            interaction_df.loc[interaction_df["donor"].isna()].copy().dropna(axis=1)
+        )
+        node_df.columns = ["otu", "count"]
+        node_df = node_df.set_index("otu")
+        interaction_df = interaction_df.loc[~interaction_df["donor"].isna()].copy()
+
     taxon_df = pd.concat(
         [
-            pd.read_table(taxon_16s_tsv, index_col=0),
-            pd.read_table(taxon_its_tsv, index_col=0),
+            pd.read_table(taxon_16s_tsv, index_col=0) if taxon_16s_tsv else None,
+            pd.read_table(taxon_its_tsv, index_col=0) if taxon_its_tsv else None,
         ]
     )
     node_df = node_df.join(taxon_df, how="left").reset_index()
@@ -585,8 +603,8 @@ def read_isolate_interaction(
         + simplify_name(node_df[label_by].tolist(), max_length=8)
     )
 
-    tree_16s = read_subtree(tree_16s_tsv, zotus_16s)
-    tree_its = read_subtree(tree_its_tsv, zotus_its)
+    tree_16s = read_subtree(tree_16s_tsv, zotus_16s) if tree_16s_tsv else None
+    tree_its = read_subtree(tree_its_tsv, zotus_its) if tree_its_tsv else None
 
     cmap = matplotlib.colormaps.get_cmap(cmap).colors
     try:
@@ -612,17 +630,18 @@ def read_isolate_interaction(
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("-i", "--interaction", required=True, help="Interaction csv")
+    parser.add_argument("-m", "--colony_metadata", default=None)
     parser.add_argument(
-        "-tb", "--taxon_16s", required=True, help="ZOTU taxonomy tsv for 16S"
+        "-tb", "--taxon_16s", default=None, help="ZOTU taxonomy tsv for 16S"
     )
     parser.add_argument(
-        "-tf", "--taxon_its", required=True, help="ZOTU taxonomy tsv for ITS"
+        "-tf", "--taxon_its", default=None, help="ZOTU taxonomy tsv for ITS"
     )
     parser.add_argument(
-        "-pb", "--tree_16s", required=True, help="Phylogenetic tree for 16S"
+        "-pb", "--tree_16s", default=None, help="Phylogenetic tree for 16S"
     )
     parser.add_argument(
-        "-pf", "--tree_its", required=True, help="Phylogenetic tree for ITS"
+        "-pf", "--tree_its", default=None, help="Phylogenetic tree for ITS"
     )
     parser.add_argument(
         "-c",
@@ -662,7 +681,7 @@ if __name__ == "__main__":
     bar_grid_line_alpha = 0.7
     # y axis range of the bar plot
     # y axis of these values will have a dotted line
-    bar_ymax = np.log10(999)
+    bar_ymax = np.log10(2000)
     bar_grid_ys = np.arange(np.ceil(bar_ymax)).astype(int)
     bar_ymin = min(bar_grid_ys) - 0.1 * (bar_ymax - min(bar_grid_ys))
     # bar_ymax = max(bar_grid_ys) + 0.1 * (max(bar_grid_ys) - min(bar_grid_ys))
@@ -694,6 +713,7 @@ if __name__ == "__main__":
     # ===== data io =====
     args = parser.parse_args()
     interaction_path = args.interaction
+    colony_metadata_path = args.colony_metadata
     taxon_16s_path = args.taxon_16s
     taxon_its_path = args.taxon_its
     tree_16s_path = args.tree_16s
@@ -705,6 +725,7 @@ if __name__ == "__main__":
     # ===== read data =====
     node_df, interaction_df, tree_16s, tree_its = read_isolate_interaction(
         interaction_path,
+        colony_metadata_path,
         taxon_16s_path,
         taxon_its_path,
         tree_16s_path,
@@ -725,7 +746,7 @@ if __name__ == "__main__":
         zip([interaction_df_pos, interaction_df_neg], axs)
     ):
         sectors = {
-            name: tree.count_terminals()
+            name: tree.count_terminals() if tree else 0
             for name, tree in zip(sector_names, [tree_16s, tree_its])
         }
         circos = Circos(
@@ -741,6 +762,8 @@ if __name__ == "__main__":
         for i, (sector_name, tree, color) in enumerate(
             zip(sector_names, [tree_16s, tree_its], colors)
         ):
+            if tree is None:
+                continue
             sector = circos.get_sector(sector_name)
             leaf_names = [i.name for i in tree.get_terminals()]
 

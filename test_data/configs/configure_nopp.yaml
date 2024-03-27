@@ -1,4 +1,4 @@
-# This config disables postprocessing. Useful for anchor colony detection.
+# This config disables postprocessing. Useful for anchor colony detection on RGB images.
 # system setup
 
 # image calibration

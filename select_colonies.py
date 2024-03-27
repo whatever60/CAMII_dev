@@ -169,6 +169,9 @@ def farthest_points(
             f"Number of selected points ({k}) should be smaller than the number of data "
             f"points ({data.shape[0]})."
         )
+    if k <= 1:
+        raise ValueError("Number of selected points should be larger than 1.")
+
     if group_assignment is None and group_max is None:
         return _farthest_points(data, k, seed, kmeans_init)
     elif group_assignment is not None and group_max is not None:

@@ -35,7 +35,7 @@ def _find_plate2dir(data_dir: str) -> dict[str, str]:
                 barcodes2days[barcode].append(d)
         plate2dir = {}
         for barcode, days in barcodes2days.items():
-            plate2dir[barcode] = f"{data_dir}/d{max(days)}"
+            plate2dir[barcode] = f"{data_dir}/d{min(days)}"
         return plate2dir
     else:
         # if there is no sub directory in data_dir, return all *_metadata.csv where * is a plate barcode
@@ -166,7 +166,7 @@ def _align_isolate_colony(
             )
             if bad_colony_idx:
                 warnings.warn(
-                    f"\t\t\t{len(bad_colony_idx)} colonies have coliides with other "
+                    f"\t\t\t{len(bad_colony_idx)} colonies have collides with other "
                     "colonies. These colonies will not be used."
                 )
 
@@ -196,6 +196,7 @@ def read_camii_isolate_data(
     #     isolate_metadata_dir, plate_metadata_path
     # )
     isolate_metadata = pd.read_table(isolate_metadata_path, index_col="sample")
+    num_isolates_picked = len(isolate_metadata)
     colony_metadata = _read_colony_metadata(colony_metadata_dir)
 
     src_plates_in_iso = isolate_metadata["src_plate"].unique()
@@ -214,11 +215,18 @@ def read_camii_isolate_data(
             f"Colony plates {extra_plates} are not in isolate metadata, meaning that they "
             "are not picked. Colonies from these plates will not be utilized."
         )
-    colony_metadata, isolate_metadata, aligers = _align_isolate_colony(
+    colony_metadata, isolate_metadata, aligners = _align_isolate_colony(
         colony_metadata, isolate_metadata, plates_in_colony, log=log
     )
+    num_colonies_detected = sum(len(a._meta_rgb) for a in aligners)
+    num_colonies_paired = sum(
+        np.unique(
+            a._map_rgb_isolate2rgb_clean[a._map_rgb_isolate2rgb_clean != -1]
+        ).shape[0]
+        for a in aligners
+    )
 
-    isolate_count = pd.read_table(isolate_count_path, index_col=0)
+    isolate_count = pd.read_table(isolate_count_path, index_col="#OTU ID").transpose()
     missing_isolates = np.setdiff1d(isolate_metadata.index, isolate_count.index)
     if missing_isolates.any():
         warnings.warn(
@@ -230,7 +238,7 @@ def read_camii_isolate_data(
     colony_count = pd.concat(
         [
             aligner.agg(query="isolate", target="rgb", data=isolate_count)
-            for aligner in aligers
+            for aligner in aligners
         ],
         axis=0,
     )
@@ -240,6 +248,7 @@ def read_camii_isolate_data(
     colony_count = colony_count.loc[good_isolates]
 
     colony_metadata = colony_metadata.loc[colony_count.index]
+    num_colonies_paired_good = len(colony_metadata)
     colony_metadata["otu"] = colony_count.idxmax(axis=1).to_numpy()
 
     # do QC for ZOTUs.
@@ -248,7 +257,15 @@ def read_camii_isolate_data(
     colony_metadata = colony_metadata.query("otu in @high_ab_otu")
     if log:
         rprint(
-            f"{sum(~good_isolates)} isolates are filtered out by QC, {sum(good_isolates)} are left."
+            f"{num_isolates_picked} isolates are picked, "
+            f"{sum(~good_isolates)} isolates are filtered out by QC, and "
+            f"{sum(good_isolates)} are left."
+        )
+        rprint(
+            f"{num_colonies_detected} colonies are detected, "
+            f"{num_colonies_paired} are paired with isolates, "
+            f"{num_colonies_paired_good} are paired with good isolates, and"
+            f"{len(colony_metadata)} will be involved in interaction inference."
         )
         rprint(
             f"{len(otu_count) - len(high_ab_otu)} ZOTUs are filtered out by QC, {len(high_ab_otu)} are left."
@@ -266,7 +283,7 @@ def read_camii_isolate_data(
     colony_count = pd.concat(
         [
             aligner.agg(query="isolate", target="rgb", data=isolate_count)
-            for aligner in aligers
+            for aligner in aligners
         ],
         axis=0,
     )
@@ -296,13 +313,11 @@ def read_camii_isolate_data(
     return colony_metadata
 
 
-def infer_pairwise_interaction(
+def calc_interaction(
     colony_metadata: pd.DataFrame,
     max_dist: int = 25,
 ) -> pd.DataFrame:
-    otus = colony_metadata.otu.unique()
-    interaction_stats = {}
-    colonies_alone = []
+    interaction_stats = []
     for plate, colony_metadata_p in colony_metadata.groupby("plate_barcode"):
         coords = colony_metadata_p[["center_x", "center_y"]]
         radius = colony_metadata_p["radius"].to_numpy()
@@ -310,44 +325,77 @@ def infer_pairwise_interaction(
         dist_mtx[dist_mtx > max_dist] = -1
         # set diagonal to -1 to avoid self-interaction
         dist_mtx[np.diag_indices_from(dist_mtx)] = -1
-        colonies_alone.append(colony_metadata_p.index[(dist_mtx == -1).all(axis=1)])
-        interaction_stats[plate] = {
-            "area": colony_metadata_p.area.to_numpy(),
-            "dist_mtx": dist_mtx,
-            "otu2idxs": {
-                otu: np.where(colony_metadata_p.otu == otu)[0] for otu in otus
-            },
-        }
+        receptors, donors = np.where(dist_mtx != -1)
+        interaction_stats.append(
+            pd.DataFrame(
+                {
+                    "plate_barcode": plate,
+                    "receptor": colony_metadata_p.index[receptors],
+                    "donor": colony_metadata_p.index[donors],
+                    "distance": dist_mtx[receptors, donors],
+                }
+            )
+        )
+    return pd.concat(interaction_stats)
+
+
+def infer_interaction(
+    colony_metadata: pd.DataFrame, interaction_stats: pd.DataFrame
+) -> pd.DataFrame:
+    # colonies_alone.append(colony_metadata_p.index[(dist_mtx == -1).all(axis=1)])
+    # interaction_stats[plate] = {
+    #     "area": colony_metadata_p.area.to_numpy(),
+    #     "dist_mtx": dist_mtx,
+    #     "otu2idxs": {
+    #         otu: np.where(colony_metadata_p.otu == otu)[0] for otu in otus
+    #     },
+    # }
+    colony_idx2otu = colony_metadata["otu"].to_dict()
+    colony_idx2area = colony_metadata["area"].to_dict()
     alone_areas = (
-        colony_metadata.loc[np.concatenate(colonies_alone)]
+        colony_metadata.query("index not in @interaction_stats['receptor'].unique()")
         .groupby("otu")["area"]
         .agg(list)
     )
+
+    interaction_stats = interaction_stats.copy()
+    interaction_stats["receptor_otu"] = interaction_stats["receptor"].map(
+        colony_idx2otu
+    )
+    interaction_stats["donor_otu"] = interaction_stats["donor"].map(colony_idx2otu)
+    # otus = colony_metadata["otu"].unique()
+    # alone_areas = (
+    #     colony_metadata.loc[np.concatenate(colonies_alone)]
+    #     .groupby("otu")["area"]
+    #     .agg(list)
+    # )
     receptors, donors, fcs, pvals, num_interactions = [], [], [], [], []
-    for receptor_otu_idx, donor_otu_idx in product(range(len(otus)), repeat=2):
-        receptor_otu = otus[receptor_otu_idx]
-        donor_otu = otus[donor_otu_idx]
+    # for receptor_otu_idx, donor_otu_idx in product(range(len(otus)), repeat=2):
+    for (receptor_otu, donor_otu), stats in interaction_stats.groupby(
+        ["receptor_otu", "donor_otu"],
+    ):
+        # receptor_otu = colony_idx2otu[receptor_otu_idx]
+        # donor_otu = colony_idx2otu[donor_otu_idx]
         if (
             receptor_otu == donor_otu
             or receptor_otu.endswith("unknown")
             or donor_otu.endswith("unknown")
+            or receptor_otu.endswith("_UNKNOWN")
+            or donor_otu.endswith("_UNKNOWN")
         ):
             continue
-        areas_list = []
-        num_interaction = 0
+        areas = (
+            stats.drop_duplicates(["receptor", "plate_barcode"])["receptor"]
+            .map(colony_idx2area)
+            .to_numpy()
+        )
+        num_interaction = len(stats)
         # aggregate all neighboring pairs of receptor_otu and donor_otu
-        for plate, stats in interaction_stats.items():
-            areas = stats["area"]
-            dist_mtx = stats["dist_mtx"]
-            otu2idxs = stats["otu2idxs"]
-            receptor_idx, donor_idx = otu2idxs[receptor_otu], otu2idxs[donor_otu]
-            pairing = np.where(dist_mtx[receptor_idx][:, donor_idx] != -1)
-            num_interaction += len(pairing[0])
-            areas_list.append(areas[receptor_idx[np.unique(pairing[0])]])
-        areas = np.concatenate(areas_list)
+        # areas_list.append(areas[receptor_idx[np.unique(pairing[0])]])
+        # areas = np.concatenate(areas_list)
         areas_alone = alone_areas.get(donor_otu, [])
         if not len(areas) or not len(areas_alone):
-            fc = utest_pval = -1
+            continue
         else:
             fc = areas.mean() / np.mean(areas_alone)
             utest_pval = mannwhitneyu(areas, areas_alone).pvalue
@@ -430,7 +478,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "-o",
-        "--output_path",
+        "--output_dir",
         type=str,
         required=True,
         help="Path to output file.",
@@ -446,7 +494,7 @@ if __name__ == "__main__":
     min_fc = args.min_fc
     min_num_interactions = args.min_num_interactions
     max_qval = args.max_qval
-    output_path = args.output_path
+    output_dir = args.output_dir
 
     colony_metadata = read_camii_isolate_data(
         isolate_count_path,
@@ -455,25 +503,33 @@ if __name__ == "__main__":
         min_count=min_count,
         min_purity=min_purity,
     )
-    interaction_df = infer_pairwise_interaction(
-        colony_metadata,
-        max_dist=max_dist,
-    )
-    interaction_df = interaction_df.query(
+    interaction_df = calc_interaction(colony_metadata, max_dist=max_dist)
+    interaction_summary_df = infer_interaction(colony_metadata, interaction_df)
+    interaction_summary_df = interaction_summary_df.query(
         "(fc >= @min_fc or fc <= 1/@min_fc) "
         "and num_interactions >= @min_num_interactions "
         "and pval >= 0"
     )
-    interaction_df["qval"] = false_discovery_control(interaction_df["pval"])
-    interaction_df = interaction_df.query("qval <= @max_qval")
-    # add ZOTU count to interaction_df by adding rows to interaction_df with only
+    interaction_summary_df["qval"] = false_discovery_control(
+        interaction_summary_df["pval"]
+    )
+    interaction_summary_df = interaction_summary_df.query("qval <= @max_qval")
+    colony_metadata[["otu", "plate_barcode", "area"]].to_csv(
+        os.path.join(output_dir, "colony_metadata.csv")
+    )
+    interaction_df.to_csv(
+        os.path.join(output_dir, "colony_interaction.csv"), index=False
+    )
+    interaction_summary_df.to_csv(
+        os.path.join(output_dir, "colony_interaction_summary.csv"), index=False
+    )
+    # add ZOTU count to interaction_summary_df by adding rows to interaction_summary_df with only
     # "receptor" and "num_interactions" columns.
-    zotus_in_interaction = sorted(
-        set(interaction_df.receptor.unique()) | set(interaction_df.donor.unique())
-    )
-    count_df = (
-        colony_metadata.value_counts("otu").loc[zotus_in_interaction].reset_index()
-    )
-    count_df.columns = ["receptor", "num_interactions"]
-    interaction_df = pd.concat([interaction_df, count_df])
-    interaction_df.to_csv(output_path, index=False)
+    # zotus_in_interaction = sorted(
+    #     set(interaction_summary_df.receptor.unique()) | set(interaction_summary_df.donor.unique())
+    # )
+    # count_df = (
+    #     colony_metadata.value_counts("otu").loc[zotus_in_interaction].reset_index()
+    # )
+    # count_df.columns = ["receptor", "num_interactions"]
+    # interaction_summary_df = pd.concat([interaction_summary_df, count_df])

@@ -99,13 +99,15 @@ def detect_colony_single(
     image_label = os.path.basename(input_path).split(".")[0].split("_")[0]
     rprint("Detecting colonies for", image_label)
     image_trans_raw = cv.imread(input_path, cv.IMREAD_COLOR).astype(np.float32)
-    image_trans_raw_cropped = image_trans_raw[
-        image_trans_raw.shape[0] // 10 : 9 * image_trans_raw.shape[0] // 10,
-        image_trans_raw.shape[1] // 10 : 9 * image_trans_raw.shape[1] // 10,
-    ]
-    config["crop_x_min"] = image_trans_raw.shape[1] // 10
-    config["crop_y_min"] = image_trans_raw.shape[0] // 10
-    image_trans_raw_cropped = image_trans_raw_cropped[..., 2].copy()
+    # image_trans_raw_cropped = image_trans_raw[
+    #     image_trans_raw.shape[0] // 10 : 9 * image_trans_raw.shape[0] // 10,
+    #     image_trans_raw.shape[1] // 10 : 9 * image_trans_raw.shape[1] // 10,
+    # ]
+    image_trans_raw_cropped = image_trans_raw
+    # config["crop_x_min"] = image_trans_raw.shape[1] // 10
+    # config["crop_y_min"] = image_trans_raw.shape[0] // 10
+    # image_trans_raw_cropped = image_trans_raw_cropped[..., 2].copy()
+    image_trans_raw_cropped = image_trans_raw_cropped.mean(axis=-1).copy()
     image_trans = image_trans_raw_cropped.max() - image_trans_raw_cropped
     # image_trans = 255 - image_trans
     # image_trans, _ = correct_image(

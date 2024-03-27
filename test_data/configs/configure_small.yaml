@@ -23,7 +23,7 @@ bg_threshold_offset: 18
 canny_upper_percentile: 80
 
 # quality filtering
-min_size: 100
+min_size: 30
 max_size: 2000000
 min_circularity: 0.2
 max_circularity: 1

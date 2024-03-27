@@ -2,12 +2,12 @@
 import struct
 import json
 import ast
-import numpy as np
 import os
 import argparse
 import glob
 import sys
 
+import numpy as np
 from sklearn.decomposition import PCA
 from PIL import Image
 import cv2 as cv
@@ -144,31 +144,32 @@ def process_bmp(input_dir: str, output_dir: str) -> None:
 
 
 def hsi_pca(
-    arr: np.ndarray, mask: np.ndarray = None, quantile: float = 0.05
+    arr: np.ndarray, mask: np.ndarray = None, quantile: float = 0.005, zoom_f: int = 6
 ) -> np.ndarray:
     arr_flat = arr.reshape(-1, arr.shape[-1])
     if mask is None:
-        # default mask is masking the peripheral regions of the array, only leaving the 
-        # center 1/2
-        mask = np.ones(arr.shape[:-1])
+        # default mask is masking the peripheral regions of the array, only leaving the center 1/2
+        mask = np.zeros(arr.shape[:-1])
         mask[
-            arr.shape[0] // 4 : 3 * arr.shape[0] // 4,
-            arr.shape[1] // 4 : 3 * arr.shape[1] // 4,
-        ] = 0
+            arr.shape[0] // zoom_f : (zoom_f - 1) * arr.shape[0] // zoom_f,
+            arr.shape[1] // zoom_f : (zoom_f - 1) * arr.shape[1] // zoom_f,
+        ] = 1
+        mask = np.ones(arr.shape[:-1])
     if not mask.shape == arr.shape[:-1]:
         raise ValueError(
             "mask should have the same shape as the first two dimensions of array"
         )
     mask = mask.flatten().astype(bool)
-    arr_flat_nonmask = arr_flat[mask]
-    arr_flat_masked = arr_flat[~mask]
-    pca = PCA(n_components=3).fit(arr_flat_nonmask)
-    image_pca = pca.transform(arr_flat_nonmask)
+    arr_flat_masked = arr_flat[mask]
+    arr_flat_nonmask = arr_flat[~mask]
+    pca = PCA(n_components=3).fit(arr_flat_masked)
+    image_pca = pca.transform(arr_flat_masked)
     # normalize the image to [0, 1] by treating 0.005 and 0.995 quantile as 0 and 1
-    qmin, qmax = np.quantile(image_pca, [quantile, 1 - quantile], axis=0)
+    qmin, qmax = np.quantile(image_pca, [quantile, 1 - quantile])
     ret = np.zeros((np.prod(arr.shape[:-1]), 3))
     ret[mask] = image_pca
-    ret[~mask] = pca.transform(arr_flat_masked)
+    if not mask.all():
+        ret[~mask] = pca.transform(arr_flat_nonmask)
     ret = ((ret - qmin) / (qmax - qmin)).clip(0, 1)
     return ret.reshape(arr.shape[:-1] + (3,)), pca.components_
 

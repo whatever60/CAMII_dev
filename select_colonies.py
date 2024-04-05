@@ -50,8 +50,7 @@ import seaborn as sns
 from rich import print as rprint
 from tqdm.auto import tqdm, trange
 
-
-from utils import read_config, add_contours, _coco_to_contours
+from utils import read_config, add_contours, _coco_to_contours, read_file_list
 
 
 def colony_feat_pca(df_contour: pl.DataFrame) -> pl.DataFrame:
@@ -423,7 +422,7 @@ def _get_new_idx(
 
 def process_metadata(metadata_path: str) -> dict[str, tuple[int, list[str], list[str]]]:
     metadata = pd.read_csv(metadata_path)
-    g = metadata.groupby("group")
+    g = metadata.groupby("pick_group")
     group2barcodes = g["barcode"].apply(list).to_dict()
     group2num_colonies_plate = g["max_picks_plate"].apply(list).to_dict()
     group2num_colonies_group = g["num_picks_group"].first().to_dict()
@@ -473,7 +472,7 @@ def pick_colony_init(
                 },
             )
             .with_columns(barcode=pl.lit(b))
-            .with_row_count("contour_idx")
+            .with_row_index("contour_idx")
             for b in barcodes
         ]
         dicts_border = []
@@ -493,7 +492,7 @@ def pick_colony_init(
         dfs_contour = [
             df if df.shape[0] > 0 else df_dummy.clone() for df in dfs_contour
         ]
-        df_contour = pl.concat(dfs_contour).with_row_count("contour_idx_group")
+        df_contour = pl.concat(dfs_contour).with_row_index("contour_idx_group")
         df_contour = colony_feat_pca(df_contour)
         contour_feat = df_contour[["pca1", "pca2"]].to_numpy()
 
@@ -539,10 +538,11 @@ def pick_colony_init(
 
         dfs_contour = df_contour.drop(
             ["contour_idx", "contour_idx_group"]
-        ).partition_by("barcode", as_dict=True)
+        ).partition_by(["barcode"], as_dict=True)
         df_dummy = _get_empty_df(dfs_contour)
         dfs_contour = [
-            dfs_contour[b] if b in dfs_contour else df_dummy.clone() for b in barcodes
+            dfs_contour[(b,)] if (b,) in dfs_contour else df_dummy.clone()
+            for b in barcodes
         ]
         for barcode, df_contour, dict_border in zip(
             barcodes, dfs_contour, dicts_border
@@ -564,6 +564,7 @@ def _save_modified(
     dict_border: dict,  # in coco format
     barcode: str,
     annot_stage: str,
+    time_label="max",
 ) -> None:
     """These files will be saved to `output_dir`:
     - `<barcode>_annot_[init|final].json`: coco format segmentation annotation
@@ -575,12 +576,19 @@ def _save_modified(
     The order of colonies in the annotation file and metadata file will first base on
     colony class and then by colony size.
     """
+    image_label_list, image_trans_list, image_epi_list = read_file_list(
+        image_dir, int(time_label) if time_label.isdigit() else time_label
+    )
+    barcode2imgs = {
+        i: {"red": r, "white": w}
+        for i, r, w in zip(image_label_list, image_trans_list, image_epi_list)
+    }
     picking_status = df_contour["picking_status"].to_list()
 
     for idx, ps in enumerate(picking_status):
         dict_border["annotations"][idx]["category_id"] = ps
 
-    df_contour = df_contour.with_row_count("contour_idx")
+    df_contour = df_contour.with_row_index("contour_idx")
     new_order = []
     for status in pd.Series(picking_status).unique():
         df = df_contour.filter(pl.col("picking_status") == status)
@@ -605,7 +613,7 @@ def _save_modified(
     )
     for light in ["red", "white"]:
         image_contours = _add_contours(
-            cv.imread(os.path.join(image_dir, f"{barcode}_rgb_{light}.png")),
+            cv.imread(barcode2imgs[barcode][light]),
             _coco_to_contours(dict_border),
             df_contour["picking_status"].to_list(),
             df_contour[["center_x", "center_y"]].to_numpy(),
@@ -655,7 +663,11 @@ def _add_contours(
 
 
 def pick_colony_post(
-    image_dir: str, data_dir: str, metadata_path: str, start_from: str = "init"
+    image_dir: str,
+    data_dir: str,
+    metadata_path: str,
+    start_from: str = "init",
+    time_label="max",
 ):
     """Resultant csv files from initial picking are subject to manual picking and
     colonies of poor quality are removed.
@@ -666,6 +678,10 @@ def pick_colony_post(
     colonies that are not removed.
     """
     assert start_from in ["init", "final"]
+    image_label_list, image_trans_list, _ = read_file_list(
+        image_dir, int(time_label) if time_label.isdigit() else time_label
+    )
+    barcode2img_trans = dict(zip(image_label_list, image_trans_list))
     for group, (barcodes, num_colonies_plate, num_colonies) in process_metadata(
         metadata_path
     ).items():
@@ -684,7 +700,7 @@ def pick_colony_post(
                     },
                 )
                 .with_columns(barcode=pl.lit(b))
-                .with_row_count("contour_idx")
+                .with_row_index("contour_idx")
             )
             with open(os.path.join(data_dir, f"{b}_annot_{start_from}.json")) as f:
                 dict_border = json.load(f)
@@ -727,7 +743,7 @@ def pick_colony_post(
 
                 cnts_post = _coco_to_contours(dict_border_post)
                 cnts_new = [c for i, c in zip(intersect, cnts_post) if not i]
-                img = cv.imread(os.path.join(image_dir, f"{b}_rgb_red.png"))
+                img = cv.imread(barcode2img_trans[b])
                 rng = np.random.default_rng(42)
                 mock_image = rng.random(img.shape[:2])
                 # get stats and set a few features to null
@@ -741,7 +757,7 @@ def pick_colony_post(
                 )
                 df_contour = pl.concat(
                     [df_contour.drop("contour_idx"), df_contour_new], how="diagonal"
-                ).with_row_count("contour_idx")
+                ).with_row_index("contour_idx")
                 rprint(
                     "\tFound ",
                     len(cnts_new),
@@ -766,7 +782,7 @@ def pick_colony_post(
         dfs_contour = [
             df if df.shape[0] > 0 else df_dummy.clone() for df in dfs_contour
         ]
-        df_contour = pl.concat(dfs_contour).with_row_count("contour_idx_group")
+        df_contour = pl.concat(dfs_contour).with_row_index("contour_idx_group")
         df_source = df_contour.filter(pl.col("picking_status") == 1)
         df_target = df_contour.filter(pl.col("picking_status") == 2)
         data_source = df_source[["pca1", "pca2"]].to_numpy()
@@ -816,18 +832,20 @@ def pick_colony_post(
                 "Class of all colonies will remain as is."
             )
         else:
-            import pdb; pdb.set_trace()
+            import pdb
+
+            pdb.set_trace()
             rprint("Some other cases.")
 
         df_contour = df_contour.with_columns(picking_status=pl.Series(picking_status))
 
         dfs_contour_dict = df_contour.drop(
             ["contour_idx", "contour_idx_group"]
-        ).partition_by("barcode", as_dict=True)
+        ).partition_by(["barcode"], as_dict=True)
         # dfs_contour_dict = [dfs_contour_dict[b] for b in barcodes]
         df_dummy = _get_empty_df(dfs_contour_dict)
         dfs_contour_dict = [
-            dfs_contour_dict[b] if b in dfs_contour_dict else df_dummy.clone()
+            dfs_contour_dict[(b,)] if (b,) in dfs_contour_dict else df_dummy.clone()
             for b in barcodes
         ]
         for barcode, df_contour, dict_border in zip(
@@ -849,6 +867,7 @@ def pick_colony_final(
     metadata_path: str,
     output_dir: str,
     tsp_method: str = None,
+    time_label="max",
 ) -> None:
     """When the user is satisfied and no colonies need to be removed, we can reorder
     selected colonies to minimize movement (i.e., TSP problem) and save results
@@ -860,6 +879,10 @@ def pick_colony_final(
             origin plate and shape to whether the colony is picked, not picked, or
             manually excluded.
     """
+    image_label_list, image_trans_list, _ = read_file_list(
+        image_dir, int(time_label) if time_label.isdigit() else time_label
+    )
+    barcode2img_trans = {i: t for i, t in zip(image_label_list, image_trans_list)}
     os.makedirs(output_dir, exist_ok=True)
     for group, (barcodes, num_colonies_plate, num_colonies) in process_metadata(
         metadata_path
@@ -883,10 +906,15 @@ def pick_colony_final(
         ]
 
         for b, df_contour in zip(tqdm(barcodes), dfs_contour):
-            image_rgb_red = cv.imread(os.path.join(image_dir, f"{b}_rgb_red.png"))
-            image_rgb_white = cv.imread(os.path.join(image_dir, f"{b}_rgb_white.png"))
-            image_gs_red = cv.imread(os.path.join(image_dir, f"{b}_gs_red.png"))
-            image_gs_white = cv.imread(os.path.join(image_dir, f"{b}_gs_white.png"))
+            file_name = os.path.basename(barcode2img_trans[b])
+            image_rgb_red = cv.imread(os.path.join(image_dir, "red_rgb", file_name))
+            image_rgb_white = cv.imread(os.path.join(image_dir, "white_rgb", file_name))
+            image_gs_red = cv.imread(
+                os.path.join(image_dir, "red_grayscale", file_name)
+            )
+            image_gs_white = cv.imread(
+                os.path.join(image_dir, "white_grayscale", file_name)
+            )
             centers = df_contour[["center_x", "center_y"]].to_numpy()
             ps = df_contour["picking_status"].to_numpy()
             with open(os.path.join(data_dir, f"{b}_annot_final.json")) as f:
@@ -943,7 +971,7 @@ def pick_colony_final(
                 pl.col("center_x").round().cast(pl.Int32),
                 pl.col("center_y").round().cast(pl.Int32),
             ).write_csv(
-                os.path.join(output_dir, f"{b}_picking.csv"), has_header=False
+                os.path.join(output_dir, f"{b}_picking.csv"), include_header=False
             )
 
         # pca

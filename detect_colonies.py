@@ -24,9 +24,12 @@ def detect_colony_batch(
     output_dir: str,
     calib_param_path: str = f"{os.path.dirname(__file__)}/test_data/parameters/calib_parameter.npz",
     config_path: str = f"{os.path.dirname(__file__)}/test_data/configs/configure.yaml",
+    time_label: str = "max",
     toss_red: bool = False,
 ) -> None:
-    image_label_list, image_trans_list, image_epi_list = read_file_list(input_dir)
+    image_label_list, image_trans_list, image_epi_list = read_file_list(
+        input_dir, int(time_label) if time_label.isdigit() else time_label
+    )
     config = read_config(config_path)
     os.makedirs(output_dir, exist_ok=True)
     for image_label, image_trans_path, image_epi_path in zip(
@@ -443,7 +446,7 @@ def _modify_output_object_colony_detection(
         center_x=pl.col("center_x") + config["crop_x_min"],
         center_y=pl.col("center_y") + config["crop_y_min"],
         plate_barcode=pl.lit(barcode),
-    ).with_row_count("colony_index")
+    ).with_row_index("colony_index")
 
 
 def _save_outputs_colony_detection(
@@ -857,6 +860,7 @@ if __name__ == "__main__":
         required=True,
         help="Path to the configuration file.",
     )
+    parser.add_argument("-t", "--time_label", default="max", type=str)
     parser.add_argument("--toss_red", action="store_true", help="Toss the red channel.")
 
     args = parser.parse_args()
@@ -866,6 +870,7 @@ if __name__ == "__main__":
             args.output_dir,
             args.calib_param_path,
             args.config_path,
+            time_label=args.time_label,
             toss_red=args.toss_red,
         )
     elif os.path.isfile(args.input_path):

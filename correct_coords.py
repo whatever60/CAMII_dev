@@ -38,7 +38,7 @@ def coordinate_correction(input_dir, parameter_path: str):
         )
         barcode = os.path.splitext(os.path.basename(i))[0].split("_")[0]
         out_name = os.path.join(os.path.dirname(i), f"{barcode}_Coordinates.csv")
-        coor.write_csv(out_name, has_header=False)
+        coor.write_csv(out_name, include_header=False)
 
 
 if __name__ == "__main__":

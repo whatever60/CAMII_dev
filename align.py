@@ -157,6 +157,13 @@ def affine_transform(params: torch.Tensor, keypoints: torch.Tensor):
     norm = torch.sqrt(a**2 + b**2)
     sin_t, cos_t = b / norm, a / norm
     # scaling + rotation, then translation
+    # rotation_matrix = torch.stack(
+    #     [torch.stack([cos_t, -sin_t]), torch.stack([sin_t, cos_t])], dim=0
+    # )
+    # scaling_matrix = np.diag(torch.stack([sx, sy]))
+    # transformed_keypoints = keypoints @ rotation_matrix @ scaling_matrix + torch.stack(
+    #     [tx, ty]
+    # )
     transformed_keypoints = keypoints @ torch.stack(
         [torch.stack([sx * cos_t, -sy * sin_t]), torch.stack([sx * sin_t, sy * cos_t])],
         dim=0,
@@ -183,10 +190,8 @@ def affine_transform_rev(params: torch.Tensor, keypoints: torch.Tensor):
     """
     a, b, tx, ty, sx, sy = params
     norm = torch.sqrt(a**2 + b**2)
-    sin_t, cos_t = (
-        b / norm,
-        a / norm,
-    )  # Same as forward because rotation matrix is orthogonal
+    # Same as forward because rotation matrix is orthogonal
+    sin_t, cos_t = b / norm, a / norm
 
     # Inverse translation
     keypoints_translated_back = keypoints - torch.stack([tx, ty])
@@ -200,6 +205,13 @@ def affine_transform_rev(params: torch.Tensor, keypoints: torch.Tensor):
         ],
         dim=0,
     )
+    # rotation_matrix = torch.stack(
+    #     [torch.stack([cos_t, sin_t]), torch.stack([-sin_t, cos_t])], dim=0
+    # )
+    # scaling_matrix = torch.diag(torch.stack([sx_inv, sy_inv]))
+    # transformed_keypoints_rev = (
+    #     keypoints_translated_back @ scaling_matrix @ rotation_matrix
+    # )
 
     return transformed_keypoints_rev
 
@@ -318,7 +330,7 @@ def find_affine(
     target: np.ndarray,
     weighted_by: str = "uniform",
     hparams: dict[str, float] = None,
-    log: bool = True,
+    log: int = 1,
     flip: bool = False,
     mean_q: np.ndarray = None,
     std_q: np.ndarray = None,
@@ -359,7 +371,7 @@ def find_affine(
             flip_tensor(query_rescaled, h_flip, v_flip),
             target_rescaled,
             weight,
-            log,
+            log == 2,
             hparams,
         )
         res[(h_flip, v_flip)] = logger
@@ -369,8 +381,8 @@ def find_affine(
     epoch = logger.best_epoch
     params = logger.best_params
 
-    if log:
-        rprint(f"\tOptimized Parameters at Epoch {epoch}:", end="\n\t")
+    if log >= 1:
+        rprint(f"Optimized Parameters at Epoch {epoch}:")
         rprint(
             *_affine_transform_equation(params.detach(), best_flip),
             sep="; ",
@@ -400,7 +412,7 @@ def _find_affine(
     # beta_s = 0
     if hparams is None:
         hparams = {}
-    lr = hparams.get("lr", 0.005)
+    lr = hparams.get("lr", 0.002)
     max_epochs = hparams.get("max_epochs", 10000)
     patience = hparams.get("patience", 100)
     beta_d = hparams.get("beta_d", 0.2)
@@ -823,6 +835,7 @@ class Aligner:
         std_q: np.ndarray = None,
         mean_t: np.ndarray = None,
         std_t: np.ndarray = None,
+        log: int = 1,
     ) -> None:
         coords_q = getattr(self, f"coords_{query}")
         coords_t = getattr(self, f"coords_{target}")
@@ -843,7 +856,7 @@ class Aligner:
         q2t_params, *q2t_stats, q2t_flip = find_affine(
             coords_q,
             coords_t,
-            log=False,
+            log=log,
             flip=flip,
             mean_q=mean_q,
             std_q=std_q,
@@ -908,7 +921,7 @@ class Aligner:
         index: int,
         size: int = 0,
         padding: int | float = 0,
-        modality_q: str = None,
+        modality_t: str = None,
         add_contour: str = "none",
         _use_arr: bool = False,
     ) -> np.ndarray:
@@ -926,15 +939,15 @@ class Aligner:
         Contour of selected colony or all colonies could be added. Convineint for
             plotting.
         """
-        if modality_q == "isolate":
+        if modality_t == "isolate":
             raise ValueError("Isolate has no background image or contours to crop.")
         if not modality in self.modalities:
             raise ValueError(
                 f"modality should be one of {self.modalities}, got {modality}"
             )
-        if modality_q is None:
-            modality_q = modality
-        if modality == modality_q:
+        if modality_t is None:
+            modality_t = modality
+        if modality == modality_t:
             contours = getattr(self, f"contours_{modality}")
             x, y, w, h = cv.boundingRect(contours[index])
             size = max(w, h) if not size else size
@@ -945,17 +958,17 @@ class Aligner:
                     "size should be given when modality is not the reference modality."
                 )
             else:
-                center = getattr(self, f"_func_{modality}_{modality}2{modality_q}")(
-                    getattr(self, f"coords_{modality}")[index]
-                )
+                center = getattr(self, f"_func_{modality_t}_{modality}2{modality_t}")(
+                    getattr(self, f"coords_{modality}")[index].reshape(1, -1)
+                ).flatten()
 
         if isinstance(padding, int):
             size += 2 * padding
         elif isinstance(padding, float):
             size *= 1 + padding
         size = int(size)
-        ret = getattr(self, f"pic_{modality_q}").copy()
-        if modality == modality_q:
+        ret = getattr(self, f"pic_{modality_t}").copy()
+        if modality == modality_t:
             if add_contour == "self":
                 cv.drawContours(ret, contours, index, (0, 0, 0), 1)
                 mask = None
@@ -978,7 +991,7 @@ class Aligner:
         ret = self._crop_at(ret, center, size)
 
         if (
-            ((not modality_q) and modality == "hsi") or modality_q == "hsi"
+            ((not modality_t) and modality == "hsi") or modality_t == "hsi"
         ) and _use_arr:
             ret_arr = self._crop_at(self.arr_hsi, center, size).copy()
             if mask is not None:

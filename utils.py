@@ -1,5 +1,6 @@
 import sys
 import os
+from os import path as op
 from collections import defaultdict
 import yaml
 import glob
@@ -51,9 +52,205 @@ def read_config(config_path: str):
     return ret
 
 
-def read_file_list(input_dir: str) -> tuple[list[str], list[str], list[str]]:
+def parse_dir_for_time_series(input_dir) -> dict[str, dict[int, str]]:
+    """
+    Parses a directory containing time series images.
+
+    File name format is assumed to be "{barcode}_{time_point}.png". Time points must be
+        positive integers. If time point is absent, i.e. "{barcode}.png", time point
+        will be assumed to be -1. That is, this image will be the default for this
+        barcode.
+
+    Args:
+        input_dir (str): The path to the input directory.
+
+    Returns:
+        dict[str, dict[int, str]]: A dictionary containing the image labels as keys
+            and a dictionary containing the time points as keys and the file paths as
+            values.
+    """
+    if not op.isdir(input_dir):
+        raise ValueError(f"Directory {input_dir} not found.")
+    image_time_series = defaultdict(dict)
+    for image in sorted(glob.glob(f"{input_dir}/*.png")):
+        barcode, time_point = op.splitext(op.basename(image))[0].split("_")[
+            :2
+        ]
+        if time_point == "":
+            time_point = -1
+        else:
+            time_point = int(time_point[1:])
+        image_time_series[barcode][time_point] = image
+    return image_time_series
+
+
+def _get_time_points(
+    input_dir: dict, time: int | str = "max"
+) -> tuple[list[str], list[str]]:
+    """
+    Processes an rgb dictionary to determine appropriate time points and compiles lists
+    of image labels and corresponding image paths.
+
+    Args:
+        input_dir (dict): A dictionary containing image labels as keys and a dictionary
+            containing the time points as keys and the file paths as values.
+        time (int | str): The time point or criteria ('min' or 'max') for image
+            selection.
+        directory (str): The directory name ('red_rgb' or 'white_rgb') indicating the
+            image type.
+
+    Returns:
+        tuple[list[str], list[str]]: Two lists, one of image labels and another of corresponding image paths.
+    """
+    image_label_list = []
+    image_list = []
+    ts_dict = parse_dir_for_time_series(input_dir)
+
+    for barcode, time_points in ts_dict.items():
+        if isinstance(time, int):
+            if time in time_points:
+                image_label_list.append(barcode)
+                image_list.append(time_points[time])
+            else:
+                raise ValueError(
+                    f"Time point {time} not found for barcode {barcode} in {input_dir}."
+                )
+        else:
+            if time_points:
+                if time == "min":
+                    selected_time = min(time_points.keys())
+                elif time == "max":
+                    selected_time = max(time_points.keys())
+                else:
+                    raise ValueError(
+                        f"Invalid time argument {time}. Must be int, 'min', or 'max'."
+                    )
+
+                # if -1 is a time point, use it as the default
+                if -1 in time_points:
+                    selected_time = -1
+
+                image_label_list.append(barcode)
+                image_list.append(time_points[selected_time])
+            else:
+                raise ValueError(
+                    f"No time points found for barcode {barcode} in {input_dir}."
+                )
+
+    return image_label_list, image_list
+
+
+def read_file_list(
+    input_dir: str, time: int | str = "max"
+) -> tuple[list[str], list[str], list[str]]:
+    """
+    Reads a list of image files from a directory, ensuring consistency between red and 
+        white RGB images, and returns the file paths. It provides detailed information 
+        on any inconsistencies found between the labels in the red_rgb and white_rgb 
+        directories.
+
+    Args:
+        input_dir (str): The directory from which to read images.
+        time (int | str): The time point or criteria for image selection.
+
+    Returns:
+        tuple[list[str], list[str], list[str]]: Lists of image labels, transmission, 
+            and epifluorescence image paths.
+    """
+    if not op.isdir(input_dir):
+        raise ValueError(f"Directory {input_dir} not found.")
+    red_labels, red_images = _get_time_points(f"{input_dir}/red_rgb", time)
+    white_labels, white_images = _get_time_points(f"{input_dir}/white_rgb", time)
+
+    # Determine the differences between red and white labels
+    missing_in_red = set(white_labels) - set(red_labels)
+    missing_in_white = set(red_labels) - set(white_labels)
+
+    if missing_in_red or missing_in_white:
+        error_messages = []
+        if missing_in_red:
+            error_messages.append(
+                f"{len(missing_in_red)} labels found in white_rgb but not in red_rgb: "
+                f"{', '.join(sorted(missing_in_red))}"
+            )
+        if missing_in_white:
+            error_messages.append(
+                f"{len(missing_in_white)} labels found in red_rgb but not in white_rgb: "
+                f"{', '.join(sorted(missing_in_white))}"
+            )
+        raise ValueError(
+            "Inconsistent labels between red_rgb and white_rgb directories: "
+            + "; ".join(error_messages)
+        )
+
+    return red_labels, red_images, white_images
+
+
+# def read_file_list(
+#     input_dir: str, time: int | str = "max"
+# ) -> tuple[list[str], list[str], list[str]]:
+#     """
+#     Reads a list of image files from a directory and returns the file paths.
+
+#     Args:
+#         input_dir (str): The path to the input directory.
+#         time (int | str): The time point to read images from if int. Otherwise, must be
+#             "min" or "max", in which case the minimum or maximum time point will be
+#             selected. By default we select the maximum time point.
+
+#     Returns:
+#         tuple[int, list[str], list[str], list[str]]: A tuple containing the total number
+#             of images, a list of image labels, a list of transmission image file paths,
+#             and a list of epifluorescence image file paths.
+#     """
+#     image_label_list = []
+#     image_trans_list = []
+#     image_epi_list = []
+#     rgb_red_dict = parse_dir_for_time_series(f"{input_dir}/red_rgb")
+#     rgb_white_dict = parse_dir_for_time_series(f"{input_dir}/white_rgb")
+#     # take the union of all barcodes in the two dictionaries and raise error during loop
+#     # if not all barcodes are present in both dictionaries
+#     for barcode in set(rgb_red_dict.keys()) | set(rgb_white_dict.keys()):
+#         rgb_red_b = rgb_red_dict.get(barcode, {})
+#         rgb_white_b = rgb_white_dict.get(barcode, {})
+#         if not rgb_red_b:
+#             raise ValueError(f"Barcode {barcode} not found in rgb_red directory.")
+#         if not rgb_white_b:
+#             raise ValueError(f"Barcode {barcode} not found in rgb_white directory.")
+#         if isinstance(time, int):
+#             time_point_red = time
+#             time_point_white = time
+#         else:
+#             if time == "min":
+#                 func = min
+#             elif time == "max":
+#                 func = max
+#             else:
+#                 raise ValueError(
+#                     f"Invalid time argument {time}. Must be int, 'min', or 'max'."
+#                 )
+#             time_point_red = func(rgb_red_b.keys())
+#             time_point_white = func(rgb_white_b.keys())
+#         # if -1 is one of the time points, use it as the default
+#         if -1 in rgb_red_b:
+#             time_point_red = -1
+#         if -1 in rgb_white_b:
+#             time_point_white = -1
+#         image_label_list.append(barcode)
+#         image_trans_list.append(rgb_red_b[time_point_red])
+#         image_epi_list.append(rgb_white_b[time_point_white])
+#     return image_label_list, image_trans_list, image_epi_list
+
+
+def read_file_list_(input_dir: str) -> tuple[list[str], list[str], list[str]]:
     """
     Reads a list of image files from a directory and returns the file paths.
+
+    DEPRECATED:
+        We used to store all the images in a single directory, using file names like
+        "{barcode}_{condition}.png", where condition indicates light condition and
+        channel. Now we store conditions in separate directories, and incorporate
+        time series label into the file names.
 
     Args:
         input_dir (str): The path to the input directory.
@@ -68,7 +265,7 @@ def read_file_list(input_dir: str) -> tuple[list[str], list[str], list[str]]:
     image_epi_list = []
     for image in sorted(glob.glob(f"{input_dir}/*_rgb_red.png")):
         # red light rgb image
-        barcode = os.path.splitext(os.path.basename(image))[0].split("_")[0]
+        barcode = op.splitext(op.basename(image))[0].split("_")[0]
         image_label_list.append(barcode)
         image_trans_list.append(image)
     for image in sorted(glob.glob(f"{input_dir}/*_rgb_white.png")):

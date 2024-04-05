@@ -256,15 +256,11 @@ def read_camii_isolate_data(
     high_ab_otu = otu_count[otu_count >= min_count].index
     colony_metadata = colony_metadata.query("otu in @high_ab_otu")
     if log:
-        rprint(
-            f"{num_isolates_picked} isolates are picked, "
-            f"{sum(~good_isolates)} isolates are filtered out by QC, and "
-            f"{sum(good_isolates)} are left."
-        )
+        rprint(f"{num_isolates_picked} isolates are picked.")
         rprint(
             f"{num_colonies_detected} colonies are detected, "
             f"{num_colonies_paired} are paired with isolates, "
-            f"{num_colonies_paired_good} are paired with good isolates, and"
+            f"{num_colonies_paired_good} are paired with good isolates, and "
             f"{len(colony_metadata)} will be involved in interaction inference."
         )
         rprint(

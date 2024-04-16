@@ -17,40 +17,18 @@ import networkx as nx
 from rich import print as rprint
 
 # from align import find_affine, get_query2target_func, find_mutual_pairs
-from align import Aligner, remove_bad_nodes, network_to_map
+from utils import _get_time_points
 
 
-def _find_plate2dir(data_dir: str) -> dict[str, str]:
-    if any(os.path.isdir(i) for i in glob.glob(f"{data_dir}/*")):
-        # This means the data are generated as a time-series for multiple days where
-        # the names of subdirectories are the date of the experiment, such as `d1`. We
-        # first find all plate barcodes and find the last date for each plate barcode.
-        barcodes2days = defaultdict(list)
-        for subdir in os.listdir(f"{data_dir}"):
-            if not os.path.isdir(f"{data_dir}/{subdir}"):
-                continue
-            d = int(subdir[1:])
-            for f in glob.glob(f"{data_dir}/{subdir}/*_metadata.csv"):
-                barcode = os.path.basename(f).split("_")[0]
-                barcodes2days[barcode].append(d)
-        plate2dir = {}
-        for barcode, days in barcodes2days.items():
-            plate2dir[barcode] = f"{data_dir}/d{min(days)}"
-        return plate2dir
-    else:
-        # if there is no sub directory in data_dir, return all *_metadata.csv where * is a plate barcode
-        plate_barcodes = [
-            os.path.basename(i).split("_")[0]
-            for i in glob.glob(f"{data_dir}/*_metadata.csv")
-        ]
-        return {p: data_dir for p in plate_barcodes}
-
-
-def _read_colony_metadata(colony_metadata_dir: str) -> pd.DataFrame:
+def _read_colony_metadata(
+    colony_metadata_dir: str, time: int | str = "max"
+) -> pd.DataFrame:
     # read colony metadata from CAMII picking pipeline
     colony_metadatas = []
-    for p, f in _find_plate2dir(colony_metadata_dir).items():
-        df_colony = pd.read_csv(os.path.join(f, f"{p}_metadata.csv"))
+    for p, f in zip(
+        *_get_time_points(colony_metadata_dir, ext="_metadata.csv", time=time)
+    ):
+        df_colony = pd.read_csv(f)
         if (df_colony.plate_barcode != p).any():
             rprint(
                 f"WARNING: plate barcode in colony metadata does not match file name: {p}."
@@ -188,6 +166,7 @@ def read_camii_isolate_data(
     isolate_count_path: str,
     isolate_metadata_path: str,
     colony_metadata_dir: str,
+    time: str | int = "max",
     min_count: int = 10,
     min_purity: float = 0.3,
     log: bool = True,
@@ -436,6 +415,7 @@ if __name__ == "__main__":
         required=True,
         help="Path to colony metadata directory.",
     )
+    parser.add_argument("-t", "--time_label", default="max", type=str)
     parser.add_argument(
         "--min_count",
         type=int,
@@ -484,6 +464,7 @@ if __name__ == "__main__":
     isolate_count_path = args.isolate_count_path
     isolate_metadata_path = args.isolate_metadata_path
     colony_metadata_dir = args.colony_metadata_dir
+    time_label = args.time_label
     min_count = args.min_count
     min_purity = args.min_purity
     max_dist = args.max_dist
@@ -496,6 +477,7 @@ if __name__ == "__main__":
         isolate_count_path,
         isolate_metadata_path,
         colony_metadata_dir,
+        time=int(time_label) if time_label.isdigit() else time_label,
         min_count=min_count,
         min_purity=min_purity,
     )
@@ -510,6 +492,7 @@ if __name__ == "__main__":
         interaction_summary_df["pval"]
     )
     interaction_summary_df = interaction_summary_df.query("qval <= @max_qval")
+    os.makedirs(output_dir, exist_ok=True)
     colony_metadata[["otu", "plate_barcode", "area"]].to_csv(
         os.path.join(output_dir, "colony_metadata.csv")
     )

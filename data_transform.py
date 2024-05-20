@@ -132,15 +132,15 @@ def process_bmp(input_dir: str, output_dir: str) -> None:
             ::-1
         ]
         if i % 2:  # white light
-            cv.imwrite(os.path.join(output_dir, f"{barcode}_rgb_white.png"), image)
+            cv.imwrite(os.path.join(output_dir, "white_rgb", f"{barcode}.png"), image)
             cv.imwrite(
-                os.path.join(output_dir, f"{barcode}_gs_white.png"),
+                os.path.join(output_dir, "white_grayscale", f"{barcode}.png"),
                 cv.cvtColor(image, cv.COLOR_BGR2GRAY),
             )
         else:  # red light
-            cv.imwrite(os.path.join(output_dir, f"{barcode}_rgb_red.png"), image)
+            cv.imwrite(os.path.join(output_dir, "red_rgb", f"{barcode}.png"), image)
             cv.imwrite(
-                os.path.join(output_dir, f"{barcode}_gs_red.png"),
+                os.path.join(output_dir, "red_grayscale", f"{barcode}.png"),
                 cv.cvtColor(image, cv.COLOR_BGR2GRAY),
             )
             # image_gray = cv.imread(
@@ -167,7 +167,7 @@ def hsi_pca(
     mask = mask.flatten().astype(bool)
     arr_flat_masked = arr_flat[mask]
     arr_flat_nonmask = arr_flat[~mask]
-    pca = PCA(n_components=3).fit(arr_flat_masked)
+    pca = PCA(n_components=3, random_state=42).fit(arr_flat_masked)
     image_pca = pca.transform(arr_flat_masked)
     # normalize the image to [0, 1] by treating 0.005 and 0.995 quantile as 0 and 1
     qmin, qmax = np.quantile(image_pca, [quantile, 1 - quantile])
@@ -403,15 +403,13 @@ if __name__ == "__main__":
         # save as png
         image = np2png(arr, wls, ceiling, args.quantile_rgb)
         # clip at 0.995 quantile to 255
+        os.makedirs(output_dir, exist_ok=True)
         image.save(os.path.join(output_dir, image_name + "_rgb.png"))
 
         if args.pca is not True:
             sys.exit(0)
 
         # save first 3 PCs as RGB
-        pca_output_dir = args.pca_output_dir or output_dir
-        arr_flat = arr.reshape(-1, arr.shape[-1])
-
         # do cropping for the image array. Cropping must be rectangular.
         cropping = args.cropping
         mask_crop = args.mask_crop
@@ -455,6 +453,8 @@ if __name__ == "__main__":
         image_pca, loadings = hsi_pca(arr, quantile=args.quantile_pca, mask=mask_subset)
         # In the saved image, first 3 PCs are in the order of RGB.
         image_pca = Image.fromarray((image_pca * 255).astype(np.uint8))
+        pca_output_dir = args.pca_output_dir or output_dir
+        os.makedirs(pca_output_dir, exist_ok=True)
         image_pca.save(os.path.join(pca_output_dir, image_name + "_pc3.png"))
 
         # plot loading^2
@@ -468,7 +468,7 @@ if __name__ == "__main__":
         ax.set_ylabel("Squared loadings")
         ax.legend(bbox_to_anchor=(1.05, 1), loc=2, borderaxespad=0.0)
         fig.savefig(
-            os.path.join(pca_output_dir, image_name + "_pc3_loading.png"),
+            os.path.join(pca_output_dir, image_name + "_pc3_loading.jpg"),
             dpi=300,
             bbox_inches="tight",
         )

@@ -17,7 +17,8 @@ import networkx as nx
 from rich import print as rprint
 
 # from align import find_affine, get_query2target_func, find_mutual_pairs
-from utils import _get_time_points
+from align import Aligner
+from utils import _get_time_points, read_table
 
 
 def _read_colony_metadata(
@@ -93,7 +94,7 @@ def _align_isolate_colony(
     plate_barcodes: list[str] = None,
     colony_plate_key: str = "plate_barcode",
     isolate_plate_key: str = "src_plate",
-    log: bool = True,
+    log: int = 1,
 ) -> tuple[list[str], pd.Series]:
     isolate2colony = []
     bad_colonies = []
@@ -107,11 +108,11 @@ def _align_isolate_colony(
         rprint("Working on plate", plate)
         colony_plate = colony_metadata.query("plate_barcode == @plate")
         isolate_plate = isolate_metadata.query("src_plate == @plate")
-        aligner = Aligner()
+        aligner = Aligner(plate_barcode=plate)
         aligner._meta_rgb = colony_plate
         aligner._meta_isolate = isolate_plate
         query, target = "isolate", "rgb"
-        aligner.fit(query=query, target=target, flip=False)
+        aligner.fit(query=query, target=target, flip=False, log=log)
         aligner.transform(query=query, target=target)
 
         g = getattr(aligner, f"_graph_{target}_{query}")
@@ -205,7 +206,7 @@ def read_camii_isolate_data(
         for a in aligners
     )
 
-    isolate_count = pd.read_table(isolate_count_path, index_col="#OTU ID").transpose()
+    isolate_count = read_table(isolate_count_path, index_col="#OTU ID").transpose()
     missing_isolates = np.setdiff1d(isolate_metadata.index, isolate_count.index)
     if missing_isolates.any():
         warnings.warn(
@@ -482,14 +483,14 @@ if __name__ == "__main__":
         min_purity=min_purity,
     )
     interaction_df = calc_interaction(colony_metadata, max_dist=max_dist)
-    interaction_summary_df = infer_interaction(colony_metadata, interaction_df)
-    interaction_summary_df = interaction_summary_df.query(
-        "(fc >= @min_fc or fc <= 1/@min_fc) "
-        "and num_interactions >= @min_num_interactions "
-        "and pval >= 0"
+    interaction_summary_df = infer_interaction(colony_metadata, interaction_df).query(
+        "pval >= 0"
     )
     interaction_summary_df["qval"] = false_discovery_control(
         interaction_summary_df["pval"]
+    )
+    interaction_summary_df = interaction_summary_df.query(
+        "(fc >= @min_fc or fc <= 1/@min_fc) and num_interactions >= @min_num_interactions "
     )
     interaction_summary_df = interaction_summary_df.query("qval <= @max_qval")
     os.makedirs(output_dir, exist_ok=True)

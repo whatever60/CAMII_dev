@@ -6,7 +6,9 @@ import yaml
 import glob
 
 import numpy as np
+import pandas as pd
 import cv2 as cv
+import biom
 
 
 def read_config(config_path: str):
@@ -52,7 +54,7 @@ def read_config(config_path: str):
     return ret
 
 
-def parse_dir_for_time_series(input_dir) -> dict[str, dict[int, str]]:
+def parse_dir_for_time_series(input_dir, ext: str = "png") -> dict[str, dict[int, str]]:
     """
     Parses a directory containing time series images.
 
@@ -72,20 +74,24 @@ def parse_dir_for_time_series(input_dir) -> dict[str, dict[int, str]]:
     if not op.isdir(input_dir):
         raise ValueError(f"Directory {input_dir} not found.")
     image_time_series = defaultdict(dict)
-    for image in sorted(glob.glob(f"{input_dir}/*.png")):
-        barcode, time_point = op.splitext(op.basename(image))[0].split("_")[
-            :2
-        ]
-        if time_point == "":
+    for image in sorted(glob.glob(f"{input_dir}/*{ext}")):
+        paths = op.splitext(op.basename(image))[0].split("_")
+        barcode = paths[0]
+        # if not barcode in {'ABYRS855'}:
+        #     continue
+        if len(paths) == 1:
             time_point = -1
         else:
-            time_point = int(time_point[1:])
+            try:
+                time_point = int(paths[1][1:])
+            except ValueError:
+                time_point = -1
         image_time_series[barcode][time_point] = image
     return image_time_series
 
 
 def _get_time_points(
-    input_dir: dict, time: int | str = "max"
+    input_dir: dict, time: int | str = "max", ext: str = "png"
 ) -> tuple[list[str], list[str]]:
     """
     Processes an rgb dictionary to determine appropriate time points and compiles lists
@@ -104,7 +110,7 @@ def _get_time_points(
     """
     image_label_list = []
     image_list = []
-    ts_dict = parse_dir_for_time_series(input_dir)
+    ts_dict = parse_dir_for_time_series(input_dir, ext=ext)
 
     for barcode, time_points in ts_dict.items():
         if isinstance(time, int):
@@ -117,19 +123,18 @@ def _get_time_points(
                 )
         else:
             if time_points:
-                if time == "min":
-                    selected_time = min(time_points.keys())
-                elif time == "max":
-                    selected_time = max(time_points.keys())
-                else:
-                    raise ValueError(
-                        f"Invalid time argument {time}. Must be int, 'min', or 'max'."
-                    )
-
                 # if -1 is a time point, use it as the default
                 if -1 in time_points:
                     selected_time = -1
-
+                else:
+                    if time == "min":
+                        selected_time = min(time_points.keys())
+                    elif time == "max":
+                        selected_time = max(time_points.keys())
+                    else:
+                        raise ValueError(
+                            f"Invalid time argument {time}. Must be int, 'min', or 'max'."
+                        )
                 image_label_list.append(barcode)
                 image_list.append(time_points[selected_time])
             else:
@@ -144,9 +149,9 @@ def read_file_list(
     input_dir: str, time: int | str = "max"
 ) -> tuple[list[str], list[str], list[str]]:
     """
-    Reads a list of image files from a directory, ensuring consistency between red and 
-        white RGB images, and returns the file paths. It provides detailed information 
-        on any inconsistencies found between the labels in the red_rgb and white_rgb 
+    Reads a list of image files from a directory, ensuring consistency between red and
+        white RGB images, and returns the file paths. It provides detailed information
+        on any inconsistencies found between the labels in the red_rgb and white_rgb
         directories.
 
     Args:
@@ -154,7 +159,7 @@ def read_file_list(
         time (int | str): The time point or criteria for image selection.
 
     Returns:
-        tuple[list[str], list[str], list[str]]: Lists of image labels, transmission, 
+        tuple[list[str], list[str], list[str]]: Lists of image labels, transmission,
             and epifluorescence image paths.
     """
     if not op.isdir(input_dir):
@@ -316,3 +321,53 @@ def _coco_to_contours(coco: dict, category_id: int = None) -> list[np.ndarray]:
         for anno in coco["annotations"]
         if category_id is None or anno["category_id"] == category_id
     ]
+
+
+def read_table(
+    table_path: str,
+    index_col: str | int = 0,
+    comment: str = None,
+    dtype: str = "int",
+) -> pd.DataFrame:
+    """Read a table from a file and return it as a DataFrame.
+
+    Args:
+        table_path: Path to the table file. Could be a tsv, csv or biom.
+
+    Returns:
+        pd.DataFrame: DataFrame containing the table data.
+    """
+    if table_path.endswith(".biom"):
+        df_biom = biom.load_table(table_path)
+        df = df_biom.to_dataframe().astype(dtype)
+        df.index.name = df_biom.table_id
+        return df
+    else:
+        if table_path.endswith(".csv") or table_path.endswith(".csv.gz"):
+            method = pd.read_csv
+        elif table_path.endswith(".tsv") or table_path.endswith(".tsv.gz"):
+            method = pd.read_table
+        else:
+            raise ValueError("Unsupported table file format.")
+        return method(table_path, index_col=index_col, comment=comment)
+
+
+def write_table(table: pd.DataFrame, table_path: str) -> None:
+    """Write a table to a file.
+
+    Args:
+        table: DataFrame to be written to a file.
+        table_path: Path to the output file. Could be a tsv, csv or biom.
+    """
+    if table_path.endswith(".biom"):
+        data = biom.Table(
+            table.to_numpy(), table.index, table.columns, table_id=table.index.name
+        )
+        with biom.util.biom_open(table_path, "w") as f:
+            data.to_hdf5(f, "whatever60")
+    elif table_path.endswith(".csv") or table_path.endswith(".csv.gz"):
+        table.to_csv(table_path)
+    elif table_path.endswith(".tsv") or table_path.endswith(".tsv.gz"):
+        table.to_csv(table_path, sep="\t")
+    else:
+        raise ValueError("Unsupported table file format.")

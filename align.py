@@ -396,6 +396,7 @@ def find_affine(
         mean_t.numpy(),
         std_t.numpy(),
         best_flip,
+        logger.hparams,
     )
 
 
@@ -419,6 +420,15 @@ def _find_affine(
     beta_c = hparams.get("beta_c", 5)
     beta_t = hparams.get("beta_t", 1)
     beta_s = hparams.get("beta_s", 0)
+    hparams = {
+        "lr": lr,
+        "max_epochs": max_epochs,
+        "patience": patience,
+        "beta_d": beta_d,
+        "beta_c": beta_c,
+        "beta_t": beta_t,
+        "beta_s": beta_s,
+    }
 
     # Initialization
     # [a, b, tx, ty, sx, sy]
@@ -426,6 +436,7 @@ def _find_affine(
     optimizer = optim.Adam([params], lr=lr)
 
     logger = PatienceLogger(patience)
+    logger.hparams = hparams
     epoch = 0
     while epoch < max_epochs:
         optimizer.zero_grad()
@@ -853,7 +864,7 @@ class Aligner:
             mean_q = coords_t.mean(axis=0) * robot_factor
             std_q = coords_t.std(axis=0) * robot_factor
 
-        q2t_params, *q2t_stats, q2t_flip = find_affine(
+        q2t_params, *q2t_stats, q2t_flip, hparams = find_affine(
             coords_q,
             coords_t,
             log=log,
@@ -868,6 +879,10 @@ class Aligner:
         t2q_func = get_query2target_func_rev(*q2t_params, *q2t_stats, q2t_flip)
         setattr(self, f"_func_{target}_{query}2{target}", q2t_func)
         setattr(self, f"_func_{target}_{target}2{query}", t2q_func)
+        setattr(self, f"_func_{target}_{query}2{target}_params", q2t_params)
+        setattr(self, f"_func_{target}_{query}2{target}_stats", q2t_stats)
+        setattr(self, f"_func_{target}_{query}2{target}_flip", q2t_flip)
+        setattr(self, f"_func_{target}_{query}2{target}_hparams", hparams)
 
     def transform(self, query: str, target: str) -> np.ndarray:
         coords_q = getattr(self, f"coords_{query}")

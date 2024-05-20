@@ -13,6 +13,7 @@ from typing import Callable
 
 import numpy as np
 import pandas as pd
+import Bio
 from Bio import SeqIO
 from Bio import Phylo
 import dendropy
@@ -271,7 +272,7 @@ def get_arrow_func(
             receptor = row["receptor"]
             donor = row["donor"]
 
-            arr_width = l2fc2width(np.log2(row["fc"]))
+            arr_width = l2fc2width(np.abs(np.log2(row["fc"])))
             arr_alpha = mlog10qval2alpha(-np.log10(row["qval"]))
             arr_color = arr_color_pos if row["fc"] > 1 else arr_color_neg
             sector_r_sname = prefix2sname[receptor.split("-")[0]]
@@ -446,10 +447,14 @@ def add_title(sector: Sector, fontsize: int) -> None:
     )
 
 
-def add_tree(sector: Sector, r_lim: tuple[float, float], tree: Phylo.BaseTree) -> None:
+def add_tree(
+    sector: Sector, r_lim: tuple[float, float], tree: Bio.Phylo.Newick.Tree
+) -> None:
     tree_track = sector.add_track(r_lim)
     tree_track.axis(fc=None, alpha=0, lw=0)
     # tree_track.tree(tree, leaf_label_size=0)
+    if tree.count_terminals() == 1:
+        return
     tree_track.tree(
         tree,
         outer=False,
@@ -598,13 +603,23 @@ def read_isolate_interaction(
     )
     node_df = node_df.set_index("otu")
     node_df["label"] = (
-        node_df.index.map(lambda x: x.rsplit("-", 1)[-1])
+        node_df.index  # .map(lambda x: x.rsplit("-", 1)[-1])
         + "\n"
-        + simplify_name(node_df[label_by].tolist(), max_length=8)
+        + simplify_name(node_df[label_by].tolist(), max_length=6)
     )
 
-    tree_16s = read_subtree(tree_16s_tsv, zotus_16s) if tree_16s_tsv else None
-    tree_its = read_subtree(tree_its_tsv, zotus_its) if tree_its_tsv else None
+    tree_16s = (
+        read_subtree(tree_16s_tsv, zotus_16s)
+        if (tree_16s_tsv and len(zotus_16s))
+        else None
+    )
+    tree_its = (
+        read_subtree(tree_its_tsv, zotus_its)
+        if (tree_its_tsv and len(zotus_its))
+        else None
+    )
+    if tree_16s is None and tree_its is None:
+        raise ValueError("Nothing to plot")
 
     cmap = matplotlib.colormaps.get_cmap(cmap).colors
     try:
@@ -691,7 +706,7 @@ if __name__ == "__main__":
         + (r_lim_bar[1] - r_lim_bar[0]) * (bar_y - bar_ymin) / (bar_ymax - bar_ymin)
         for bar_y in bar_grid_ys
     ]
-    bar_x_tick_label_fontsize = 9
+    bar_x_tick_label_fontsize = 12
     bar_x_tick_label_margin = 2
     bar_y_tick_label_delta = 2
     bar_y_tick_label_fontsize = 8

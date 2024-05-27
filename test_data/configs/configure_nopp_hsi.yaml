@@ -1,29 +1,30 @@
-# This config is for general purpose. It keeps very small colonies.
+# This config disables postprocessing. Useful for anchor colony detection on RGB images.
 # system setup
 
 # image calibration
-# calib_gaussian_kernel: [27, 27]
 # calib_gaussian_kernel: [13, 13]
 # calib_gaussian_iteration: 20
-calib_contrast_trans_alpha: 5
-calib_contrast_trans_beta: -100
+calib_contrast_alpha: -1
+calib_contrast_beta: 255
 #calib_contrast_trans_beta: -70
 
-# image crop, 1938x1296 is the original image size under current camera setting
-crop_y_min: 150
-crop_y_max: 1150
-crop_x_min: 150
-crop_x_max: 1750
+# no cropping for HSI
+crop_y_min: 0
+crop_y_max: none
+crop_x_min: 0
+crop_x_max: none
 
 # background removal
+bg_gaussian_kernel: 4
 bg_threshold_block_size: 501
-bg_threshold_offset: 18
+bg_threshold_offset: 28
+fg_gaussian_kernel: 5
 
 # contour detection
 canny_upper_percentile: 80
 
 # quality filtering
-min_size: 30
+min_size: 100
 max_size: 2000000
 min_circularity: 0.2
 max_circularity: 1
@@ -35,10 +36,11 @@ min_inertia: 0.2
 max_inertia: 1
 min_dist: 1
 min_dist_pin: 1
-circularity_threshold: 0.85
-circularity_threshold_very_bad: 0.5
+circularity_threshold: 0.5
+circularity_threshold_very_bad: 0
 
 # multi-colony segmentation
+postprocess: false
 area_segment_min: 30
 area_segment_max: 50000
 segment_bias: 10

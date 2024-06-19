@@ -10,9 +10,9 @@ calib_contrast_beta: 255
 
 # no cropping for HSI
 crop_y_min: 0
-crop_y_max: none
+crop_y_max: null
 crop_x_min: 0
-crop_x_max: none
+crop_x_max: null
 
 # background removal
 bg_gaussian_kernel: 4

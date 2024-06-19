@@ -216,22 +216,6 @@ def _add_pca_arguments(parser: argparse.ArgumentParser) -> None:
         help="quantile for converting hyperspectral data to rgb",
     )
     parser.add_argument(
-        "-mc",
-        "--mask_crop",
-        type=str,
-        default=None,
-        help="Mask file path, should be in coco json format",
-    )
-    parser.add_argument(
-        "-c",
-        "--cropping",
-        # None or a list for 4 integers or floats
-        type=float,
-        nargs=4,
-        default=None,
-        help="Cropping the hyperspectral image",
-    )
-    parser.add_argument(
         "-ms",
         "--mask_subset",
         type=str,
@@ -291,7 +275,7 @@ if __name__ == "__main__":
     # python3 bil2numpy.py bil2npy --metadata <hdr_path> bil2npy <bil_path> --output_dir <output_dir>
     # 2. Convert one hyperspectral npy file to png with RGB channels.
 
-    matplotlib.use("TkAgg")
+    # matplotlib.use("TkAgg")
 
     parser = argparse.ArgumentParser(description="Utility for data processing")
     subparsers = parser.add_subparsers(title="subcommands", dest="subcommand")
@@ -326,6 +310,22 @@ if __name__ == "__main__":
         type=float,
         default=0.999,
         help="quantile for converting hyperspectral data to rgb",
+    )
+    npy2png_parser.add_argument(
+        "-mc",
+        "--mask_crop",
+        type=str,
+        default=None,
+        help="Mask file path, should be in coco json format",
+    )
+    npy2png_parser.add_argument(
+        "-c",
+        "--cropping",
+        # None or a list for 4 integers or floats
+        type=float,
+        nargs=4,
+        default=None,
+        help="Cropping the hyperspectral image",
     )
     _add_pca_arguments(npy2png_parser)
 
@@ -401,15 +401,6 @@ if __name__ == "__main__":
 
         # do this for both subcommands
         # save as png
-        image = np2png(arr, wls, ceiling, args.quantile_rgb)
-        # clip at 0.995 quantile to 255
-        os.makedirs(output_dir, exist_ok=True)
-        image.save(os.path.join(output_dir, image_name + "_rgb.png"))
-
-        if args.pca is not True:
-            sys.exit(0)
-
-        # save first 3 PCs as RGB
         # do cropping for the image array. Cropping must be rectangular.
         cropping = args.cropping
         mask_crop = args.mask_crop
@@ -425,7 +416,15 @@ if __name__ == "__main__":
             x, y, w, h = np.array(cv.boundingRect(masks[0]))
             cropping = [x, y, x + w, y + h]
         arr = _crop_array(arr, args.cropping)
+        image = np2png(arr, wls, ceiling, args.quantile_rgb)
+        # clip at 0.995 quantile to 255
+        os.makedirs(output_dir, exist_ok=True)
+        image.save(os.path.join(output_dir, image_name + "_rgb.png"))
 
+        if args.pca is not True:
+            sys.exit(0)
+
+        # save first 3 PCs as RGB
         # get subset mask, which can be irregular contours.
         zoom_f = args.zoom_f
         mask_subset = args.mask_subset

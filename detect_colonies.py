@@ -17,6 +17,7 @@ from skimage.segmentation import random_walker
 from rich import print as rprint
 
 from utils import read_config, read_file_list, add_contours
+from detector import CAMIIColonyDetector
 
 
 def detect_colony_batch(
@@ -41,7 +42,8 @@ def detect_colony_batch(
             config, image_trans_raw, image_epi_raw, calib_param_path, toss_red
         )
         rprint("Detecting colonies for", image_label)
-        contours, df = detect_colony(image_trans, config)
+        contours = detect_colony(image_trans, config)
+        contours, df = colony_qc(image_trans, contours, config)
         # add channel stats
         df = pl.concat(
             [
@@ -93,25 +95,25 @@ def detect_colony_single(
     """
     # read config, image label, and the image itself.
     config = read_config(config_path)
-    config["calib_contrast_trans_alpha"] = 1
-    config["calib_contrast_trans_beta"] = 255
-    config["crop_y_min"] = 0
-    config["crop_y_max"] = None
-    config["crop_x_min"] = 0
-    config["crop_x_max"] = None
+    # config["calib_contrast_trans_alpha"] = 1
+    # config["calib_contrast_trans_beta"] = 255
+    # config["crop_y_min"] = 0
+    # config["crop_y_max"] = None
+    # config["crop_x_min"] = 0
+    # config["crop_x_max"] = None
     image_label = os.path.basename(input_path).split(".")[0].split("_")[0]
     rprint("Detecting colonies for", image_label)
-    image_trans_raw = cv.imread(input_path, cv.IMREAD_COLOR).astype(np.float32)
+    image = cv.imread(input_path)
     # image_trans_raw_cropped = image_trans_raw[
     #     image_trans_raw.shape[0] // 10 : 9 * image_trans_raw.shape[0] // 10,
     #     image_trans_raw.shape[1] // 10 : 9 * image_trans_raw.shape[1] // 10,
     # ]
-    image_trans_raw_cropped = image_trans_raw
+    # image_trans_raw_cropped = image_trans_raw
     # config["crop_x_min"] = image_trans_raw.shape[1] // 10
     # config["crop_y_min"] = image_trans_raw.shape[0] // 10
     # image_trans_raw_cropped = image_trans_raw_cropped[..., 2].copy()
-    image_trans_raw_cropped = image_trans_raw_cropped.mean(axis=-1).copy()
-    image_trans = image_trans_raw_cropped.max() - image_trans_raw_cropped
+    # image_trans_raw_cropped = image_trans_raw_cropped.mean(axis=-1).copy()
+    # image_trans = image_trans_raw_cropped.max() - image_trans_raw_cropped
     # image_trans = 255 - image_trans
     # image_trans, _ = correct_image(
     #     config, image_trans_raw, None, calib_param_path=calib_param_path
@@ -122,19 +124,36 @@ def detect_colony_single(
     #     image_trans.astype(np.float32)
     #     + config["calib_contrast_trans_beta"]
     # )
+    detector = CAMIIColonyDetector(
+        bg_gaussian_kernel=config["bg_gaussian_kernel"],
+        bg_threshold_block_size=config["bg_threshold_block_size"],
+        bg_threshold_offset=config["bg_threshold_offset"],
+        fg_gaussian_kernel=config["fg_gaussian_kernel"],
+        canny_upper_percentile=config["canny_upper_percentile"],
+        clahe_clip_limit=config["clahe_clip_limit"],
+        clahe_tile_grid_size=config["clahe_tile_grid_size"],
+        calib_param=calib_param_path,
+        calib_contrast_alpha=config["calib_contrast_alpha"],
+        calib_contrast_beta=config["calib_contrast_beta"],
+        crop_x_min=config["crop_x_min"],
+        crop_x_max=config["crop_x_max"],
+        crop_y_min=config["crop_y_min"],
+        crop_y_max=config["crop_y_max"],
+    )
+    contours = detector.detect(image)
 
     if output_dir is None:
         output_dir = os.path.dirname(input_path)
     os.makedirs(output_dir, exist_ok=True)
 
-    contours, df = detect_colony(image_trans, config)
+    contours, df = colony_qc(detector.image_corrected_gs, contours, config)
     df = _modify_output_object_colony_detection(df, image_label, config)
     contours = [
         cnt + np.array([config["crop_x_min"], config["crop_y_min"]]) for cnt in contours
     ]
 
     image_trans_pin = add_contours(
-        image_trans_raw,
+        image,
         contours,
         df[["center_x", "center_y"]].to_numpy(),
         config["plate_qc_colony_contour_pixel"],
@@ -284,7 +303,12 @@ def detect_colony(
             fg_gaussian_kernel=5,
             canny_upper_percentile=config["canny_upper_percentile"],
         )
+    return contours
 
+
+def colony_qc(
+    image: np.ndarray, contours: list[np.ndarray], config: dict
+) -> tuple[list[np.ndarray], pl.DataFrame]:
     no_cnt_flag = 0
     if not contours:
         contours = [np.array([[0, 0], [0, 1], [1, 1], [1, 0]]).reshape(-1, 1, 2)]
@@ -292,7 +316,7 @@ def detect_colony(
         rprint("\tNo colony detected even before any filtering.")
 
     df_contour = _calc_contours_stats(
-        contours, image_trans, config["segment_bias"] + config["filter_bias"]
+        contours, image, config["segment_bias"] + config["filter_bias"]
     )
     min_dist_pass, min_dist_pin_pass = _check_dist_criteria(
         df_contour[["center_x", "center_y"]].to_numpy(),
@@ -364,7 +388,7 @@ def detect_colony(
             j
             for cnt, need_pp in zip(contours, df_contour["need_pp"])
             if need_pp
-            for j in postprocess_contour(cnt, image_trans, config)
+            for j in postprocess_contour(cnt, image, config)
         ]
     else:
         contours_pp = []
@@ -377,7 +401,7 @@ def detect_colony(
     if contours_pp:
         df_contour_pp = _calc_contours_stats(
             contours_pp,
-            image_trans,
+            image,
             config["segment_bias"] + config["filter_bias"],
         ).with_columns(
             post_pass=pl.col("area").is_between(

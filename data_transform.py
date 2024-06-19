@@ -131,6 +131,10 @@ def process_bmp(input_dir: str, output_dir: str) -> None:
         image = np.fromfile(f, dtype=np.uint8, offset=54).reshape(height, width, 4)[
             ::-1
         ]
+        os.makedirs(os.path.join(output_dir, "white_rgb"), exist_ok=True)
+        os.makedirs(os.path.join(output_dir, "white_grayscale"), exist_ok=True)
+        os.makedirs(os.path.join(output_dir, "red_rgb"), exist_ok=True)
+        os.makedirs(os.path.join(output_dir, "red_grayscale"), exist_ok=True)
         if i % 2:  # white light
             cv.imwrite(os.path.join(output_dir, "white_rgb", f"{barcode}.png"), image)
             cv.imwrite(

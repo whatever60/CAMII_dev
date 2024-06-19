@@ -91,7 +91,7 @@ def parse_dir_for_time_series(input_dir, ext: str = "png") -> dict[str, dict[int
 
 
 def _get_time_points(
-    input_dir: dict, time: int | str = "max", ext: str = "png"
+    input_dir: dict, time: int | str | dict[str, int | str] = "max", ext: str = "png", missing_tp: str = "silence",
 ) -> tuple[list[str], list[str]]:
     """
     Processes an rgb dictionary to determine appropriate time points and compiles lists
@@ -113,27 +113,49 @@ def _get_time_points(
     ts_dict = parse_dir_for_time_series(input_dir, ext=ext)
 
     for barcode, time_points in ts_dict.items():
-        if isinstance(time, int):
-            if time in time_points:
+        if isinstance(time, dict):
+            time_b = time[barcode]
+        else:
+            time_b = time
+        if isinstance(time_b, int):
+            if time_b in time_points:
                 image_label_list.append(barcode)
-                image_list.append(time_points[time])
+                image_list.append(time_points[time_b])
             else:
-                raise ValueError(
-                    f"Time point {time} not found for barcode {barcode} in {input_dir}."
-                )
+                if missing_tp == "raise":
+                    raise ValueError(
+                        f"Time point {time_b} not found for barcode {barcode} in {input_dir}."
+                    )
+                elif missing_tp == "print":
+                    print(
+                        f"Time point {time_b} not found for barcode {barcode} in {input_dir}."
+                    )
+                elif missing_tp == "silence":
+                    pass
+                else:
+                    raise ValueError(
+                        f"Invalid missing_tp argument {missing_tp}. "
+                        "Must be 'raise', 'print', or 'silence'."
+                    )
         else:
             if time_points:
                 # if -1 is a time point, use it as the default
-                if -1 in time_points:
-                    selected_time = -1
-                else:
-                    if time == "min":
-                        selected_time = min(time_points.keys())
-                    elif time == "max":
-                        selected_time = max(time_points.keys())
+                if time_b == "default":
+                    if -1 in time_points:
+                        selected_time = -1
                     else:
                         raise ValueError(
-                            f"Invalid time argument {time}. Must be int, 'min', or 'max'."
+                            f"Invalid time argument {time_b}. Must be 'default'."
+                        )
+                else:
+                    tps = [i for i in time_points.keys() if i >= 0]
+                    if time_b == "min":
+                        selected_time = min(tps)
+                    elif time_b == "max":
+                        selected_time = max(tps)
+                    else:
+                        raise ValueError(
+                            f"Invalid time argument {time_b}. Must be int, 'min', or 'max'."
                         )
                 image_label_list.append(barcode)
                 image_list.append(time_points[selected_time])

@@ -22,7 +22,7 @@ from utils import _get_time_points, read_table
 
 
 def _read_colony_metadata(
-    colony_metadata_dir: str, time: int | str = "max"
+    colony_metadata_dir: str, time: int | str = "default"
 ) -> pd.DataFrame:
     # read colony metadata from CAMII picking pipeline
     colony_metadatas = []

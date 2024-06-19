@@ -96,6 +96,7 @@ def loss_function(
     # [n, m], where n is the number of keypoints in A and m is the number of keypoints in B.
     cdist = torch.cdist(transformedA, keypointsB)
     min_distances, _ = torch.min(cdist, dim=1)
+    # min_distances = - 1 / (min_distances + 1e-8)
 
     # Reward correct pairing. Correct pairing is identified by mutual nearest neighbor.
     # Pairing could also be achieved by thresholding ratio of distances between nearest
@@ -239,7 +240,7 @@ def _affine_transform_equation(params: torch.Tensor, flip: tuple[bool, bool]) ->
         rotation_angle += " [magenta](big rotation)[/magenta]"
     if max(np.log10(sx).abs(), np.log10(sy).abs()) > np.log10(1.3):
         scale += " [magenta](big scaling)[/magenta]"
-    if np.log10(sx / sy).abs() > np.log10(1.05):
+    if np.log10(sx / sy).abs() > np.log10(1.2):
         scale += " [magenta](nonisotropic scaling)[/magenta]"
     return flip_str, rotation_angle, scale, translate
 
@@ -330,6 +331,7 @@ def find_affine(
     target: np.ndarray,
     weighted_by: str = "uniform",
     hparams: dict[str, float] = None,
+    params_init: np.ndarray = None,
     log: int = 1,
     flip: bool = False,
     mean_q: np.ndarray = None,
@@ -363,7 +365,14 @@ def find_affine(
         # weight by distance to origin of query data points after scaling
         weight = query_rescaled[:, 0].abs() + query_rescaled[:, 1].abs()
 
-    iterator = product([True, False], repeat=2) if flip else [(False, False)]
+    if flip is True:
+        iterator = product([True, False], repeat=2)
+    elif flip is False:
+        iterator = [(False, False)]
+    else:
+        if not len(flip) == 2:
+            raise ValueError("flip should be a tuple of two booleans.")
+        iterator = [(bool(flip[0]), bool(flip[1]))]
     # iterator = [(False, True)]
     res = {}
     for h_flip, v_flip in iterator:
@@ -373,6 +382,7 @@ def find_affine(
             weight,
             log == 2,
             hparams,
+            params_init=params_init,
         )
         res[(h_flip, v_flip)] = logger
     # find the lowest loss
@@ -401,7 +411,7 @@ def find_affine(
 
 
 def _find_affine(
-    query, target, weight, log, hparams: dict[str, float]
+    query, target, weight, log, hparams: dict[str, float], params_init: torch.Tensor = None
 ) -> PatienceLogger:
     # default hyperparameters
     # lr = 0.005
@@ -431,8 +441,11 @@ def _find_affine(
     }
 
     # Initialization
-    # [a, b, tx, ty, sx, sy]
-    params = torch.tensor([1.0, 0.0, 0.0, 0.0, 1.0, 1.0], requires_grad=True)
+    if params_init is None:
+        # [a, b, tx, ty, sx, sy]
+        params = torch.tensor([1.0, 0.0, 0.0, 0.0, 1.0, 1.0], requires_grad=True)
+    else:
+        params = torch.tensor(params_init, requires_grad=True)
     optimizer = optim.Adam([params], lr=lr)
 
     logger = PatienceLogger(patience)
@@ -841,6 +854,7 @@ class Aligner:
         query: str,
         target: str,
         hparams: dict[str, float] = None,
+        params_init: np.ndarray = None,
         flip: bool = True,
         mean_q: np.ndarray = None,
         std_q: np.ndarray = None,
@@ -861,8 +875,10 @@ class Aligner:
             std_t = np.array(pic_t.shape[:2][::-1]) / 3
         if (query, target) == ("isolate", "rgb"):
             robot_factor = 0.066
-            mean_q = coords_t.mean(axis=0) * robot_factor
-            std_q = coords_t.std(axis=0) * robot_factor
+            if mean_q is None:
+                mean_q = coords_t.mean(axis=0) * robot_factor
+            if std_q is None:
+                std_q = coords_t.std(axis=0) * robot_factor
 
         q2t_params, *q2t_stats, q2t_flip, hparams = find_affine(
             coords_q,
@@ -874,6 +890,7 @@ class Aligner:
             mean_t=mean_t,
             std_t=std_t,
             hparams=hparams,
+            params_init=params_init,
         )
         q2t_func = get_query2target_func(*q2t_params, *q2t_stats, q2t_flip)
         t2q_func = get_query2target_func_rev(*q2t_params, *q2t_stats, q2t_flip)

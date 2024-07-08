@@ -25,6 +25,7 @@ This step involves human in the loop. Specifically, The 4 column csv file can be
 """
 
 import argparse
+import random
 import os
 from itertools import cycle
 import json
@@ -54,23 +55,27 @@ from utils import read_config, add_contours, _coco_to_contours, read_file_list
 
 
 def colony_feat_pca(df_contour: pl.DataFrame) -> pl.DataFrame:
-    feats_for_pca = [
-        "area",
-        "perim",
-        "radius",
-        "circularity",
-        "convexity",
-        "inertia_ratio",
-        "Graymean",
-        "Graystd",
-        "Repimean",
-        "Repistd",
-        "Gepimean",
-        "Gepistd",
-        "Bepimean",
-        "Bepistd",
-    ]
-    contour_feat = df_contour[feats_for_pca].to_pandas()
+    # feats_for_pca = [
+    #     "area",
+    #     "perim",
+    #     "radius",
+    #     "circularity",
+    #     "convexity",
+    #     "inertia_ratio",
+    #     "Graymean",
+    #     "Graystd",
+    #     "Repimean",
+    #     "Repistd",
+    #     "Gepimean",
+    #     "Gepistd",
+    #     "Bepimean",
+    #     "Bepistd",
+    # ]
+    # select all number columns
+    feats_for_pca = df_contour.select(pl.col(pl.NUMERIC_DTYPES)).columns
+    contour_feat = df_contour[feats_for_pca].to_pandas().drop(["colony_index"], axis=1)
+    # fill na with mean
+    contour_feat = contour_feat.fillna(contour_feat.mean())
     contour_feat = StandardScaler().fit_transform(contour_feat)
     pca = PCA(n_components=2)
     dr = pca.fit_transform(contour_feat)
@@ -454,6 +459,7 @@ def pick_colony_init(
     output_dir: str,
     metadata_path: str,
     config_path: str,
+    _seed: int = 42,
 ) -> None:
     config = read_config(config_path)
     os.makedirs(output_dir, exist_ok=True)
@@ -509,7 +515,7 @@ def pick_colony_init(
                     joblib.delayed(farthest_points)(
                         contour_feat,
                         num_colonies,
-                        seed=seed + 42,
+                        seed=seed + _seed,
                         group_assignment=df_contour["barcode"].to_numpy(),
                         group_max=dict(zip(barcodes, num_colonies_plate)),
                     )
@@ -535,7 +541,7 @@ def pick_colony_init(
             .then(1)
             .otherwise(2)
         )
-
+    
         dfs_contour = df_contour.drop(
             ["contour_idx", "contour_idx_group"]
         ).partition_by(["barcode"], as_dict=True)
@@ -564,7 +570,7 @@ def _save_modified(
     dict_border: dict,  # in coco format
     barcode: str,
     annot_stage: str,
-    time_label="max",
+    time_label="default",
 ) -> None:
     """These files will be saved to `output_dir`:
     - `<barcode>_annot_[init|final].json`: coco format segmentation annotation
@@ -584,7 +590,6 @@ def _save_modified(
         for i, r, w in zip(image_label_list, image_trans_list, image_epi_list)
     }
     picking_status = df_contour["picking_status"].to_list()
-
     for idx, ps in enumerate(picking_status):
         dict_border["annotations"][idx]["category_id"] = ps
 
@@ -667,7 +672,8 @@ def pick_colony_post(
     data_dir: str,
     metadata_path: str,
     start_from: str = "init",
-    time_label="max",
+    time_label="default",
+    _seed: int = 42,
 ):
     """Resultant csv files from initial picking are subject to manual picking and
     colonies of poor quality are removed.
@@ -744,7 +750,7 @@ def pick_colony_post(
                 cnts_post = _coco_to_contours(dict_border_post)
                 cnts_new = [c for i, c in zip(intersect, cnts_post) if not i]
                 img = cv.imread(barcode2img_trans[b])
-                rng = np.random.default_rng(42)
+                rng = np.random.default_rng(_seed)
                 mock_image = rng.random(img.shape[:2])
                 # get stats and set a few features to null
                 df_contour_new = (
@@ -785,8 +791,8 @@ def pick_colony_post(
         df_contour = pl.concat(dfs_contour).with_row_index("contour_idx_group")
         df_source = df_contour.filter(pl.col("picking_status") == 1)
         df_target = df_contour.filter(pl.col("picking_status") == 2)
-        data_source = df_source[["pca1", "pca2"]].to_numpy()
-        data_target = df_target[["pca1", "pca2"]].to_numpy()
+        data_source = np.nan_to_num(df_source[["pca1", "pca2"]].to_numpy(), 0)
+        data_target = np.nan_to_num(df_target[["pca1", "pca2"]].to_numpy(), 0)
         picking_status = df_contour["picking_status"].to_numpy().copy()
         dist, _ = KDTree(data_source).query(data_target)
         num_to_pick = num_colonies - df_source.shape[0]
@@ -867,7 +873,8 @@ def pick_colony_final(
     metadata_path: str,
     output_dir: str,
     tsp_method: str = None,
-    time_label="max",
+    time_label="default",
+    _seed: int = 44,
 ) -> None:
     """When the user is satisfied and no colonies need to be removed, we can reorder
     selected colonies to minimize movement (i.e., TSP problem) and save results
@@ -884,9 +891,9 @@ def pick_colony_final(
     )
     barcode2img_trans = {i: t for i, t in zip(image_label_list, image_trans_list)}
     os.makedirs(output_dir, exist_ok=True)
-    for group, (barcodes, num_colonies_plate, num_colonies) in process_metadata(
+    for group, (barcodes, num_colonies_plate, num_colonies) in tqdm(process_metadata(
         metadata_path
-    ).items():
+    ).items()):
         dfs_contour = []
         for b in barcodes:
             df_contour = pl.read_csv(
@@ -905,7 +912,7 @@ def pick_colony_final(
             df if df.shape[0] > 0 else df_dummy.clone() for df in dfs_contour
         ]
 
-        for b, df_contour in zip(tqdm(barcodes), dfs_contour):
+        for b, df_contour in zip(tqdm(barcodes, leave=False), dfs_contour):
             file_name = os.path.basename(barcode2img_trans[b])
             image_rgb_red = cv.imread(os.path.join(image_dir, "red_rgb", file_name))
             image_rgb_white = cv.imread(os.path.join(image_dir, "white_rgb", file_name))
@@ -922,7 +929,7 @@ def pick_colony_final(
             contours = _coco_to_contours(dict_border)
 
             if tsp_method:
-                idx = _tsp(centers[ps == 1]).argsort()
+                idx = _tsp(centers[ps == 1], _seed=_seed).argsort()
                 picking_order = np.zeros(ps.shape[0], dtype=int)
                 picking_order[ps == 1] = idx + 1
                 df_contour = df_contour.with_columns(
@@ -997,8 +1004,9 @@ def pick_colony_final(
         fig.savefig(os.path.join(output_dir, f"pca_{group}.png"), dpi=300)
 
 
-def _tsp(data: np.ndarray, tsp_method: str = "heuristic") -> np.ndarray:
+def _tsp(data: np.ndarray, tsp_method: str = "heuristic", _seed: int=44) -> np.ndarray:
     """Reorder picked colonies to minimize movement"""
+    random.seed(_seed)
     if tsp_method not in ["heuristic", "exact"]:
         raise ValueError(
             f"Invalid tsp_method {tsp_method}. Choose from 'heuristic' or 'exact'."
@@ -1081,6 +1089,12 @@ if __name__ == "__main__":
         type=str,
         help="path to the configure file",
     )
+    parser_init.add_argument(
+        "--seed",
+        type=int,
+        help="random seed",
+        default=42,
+    )
 
     parser_post = subparsers.add_parser("post")
     parser_post.add_argument(
@@ -1107,6 +1121,12 @@ if __name__ == "__main__":
         type=str,
         help="start from init or final",
         choices=["init", "final"],
+    )
+    parser_post.add_argument(
+        "--seed",
+        type=int,
+        help="random seed",
+        default=43,
     )
 
     parser_final = subparsers.add_parser("final")
@@ -1142,6 +1162,12 @@ if __name__ == "__main__":
         choices=["heuristic", "exact"],
         default=None,
     )
+    parser_final.add_argument(
+        "--seed",
+        type=int,
+        help="random seed",
+        default=44,
+    )
 
     args = parser.parse_args()
 
@@ -1154,6 +1180,7 @@ if __name__ == "__main__":
             output_dir=args.output_dir,
             metadata_path=args.metadata_path,
             config_path=args.config_path,
+            _seed=args.seed,
         )
     elif args.command == "post":
         pick_colony_post(
@@ -1161,6 +1188,7 @@ if __name__ == "__main__":
             data_dir=args.input_dir,
             metadata_path=args.metadata_path,
             start_from=args.start_from,
+            _seed=args.seed,
         )
     elif args.command == "final":
         pick_colony_final(
@@ -1169,4 +1197,5 @@ if __name__ == "__main__":
             metadata_path=args.metadata_path,
             output_dir=args.output_dir,
             tsp_method=args.tsp_method,
+            _seed=args.seed,
         )

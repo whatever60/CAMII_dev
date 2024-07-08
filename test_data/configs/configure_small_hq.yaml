@@ -1,0 +1,60 @@
+# This config is for general purpose. It keeps very small colonies.
+# system setup
+
+# image calibration
+# calib_gaussian_kernel: [27, 27]
+# calib_gaussian_kernel: [13, 13]
+# calib_gaussian_iteration: 20
+calib_contrast_trans_alpha: -1
+calib_contrast_trans_beta: 0
+#calib_contrast_trans_beta: -70
+
+# image crop, 1938x1296 is the original image size under current camera setting
+crop_y_min: 300
+crop_y_max: 2400
+crop_x_min: 150
+crop_x_max: 3600
+
+# background removal
+bg_threshold_block_size: 501
+bg_threshold_offset: 18
+
+# contour detection
+canny_upper_percentile: 80
+
+# quality filtering
+min_size: 30
+max_size: 2000000
+min_circularity: 0.2
+max_circularity: 1
+small_size_area: 80
+small_size_circularity: 0.85
+min_convexity: 0.2
+max_convexity: 1
+min_inertia: 0.2
+max_inertia: 1
+min_dist: 1
+min_dist_pin: 1
+circularity_threshold: 0.85
+circularity_threshold_very_bad: 0.5
+
+# multi-colony segmentation
+area_segment_min: 30
+area_segment_max: 50000
+segment_bias: 10
+filter_bias: 20
+size_sub_sample: 10000
+post_min_size: 30
+post_min_circularity: 0.5
+post_min_convexity: 0.5
+post_min_inertia: 0.5
+random_walker_beta: 2000
+random_walker_method: bf
+random_walker_maxi_size: 17
+
+# farthest_points
+farthest_points_iteration: 10
+#num_of_colonies: 20
+
+# visualization
+plate_qc_colony_contour_pixel: 2

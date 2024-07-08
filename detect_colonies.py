@@ -38,10 +38,10 @@ def detect_colony_batch(
     ):
         image_trans_raw = cv.imread(image_trans_path, 0).astype(np.float32)
         image_epi_raw = cv.imread(image_epi_path, cv.IMREAD_COLOR).astype(np.float32)
-        # image_trans, image_epi = correct_image(
-        #     config, image_trans_raw, image_epi_raw, calib_param_path, toss_red
-        # )
-        image_trans, image_epi = image_trans_raw, image_epi_raw
+        calib_param_path = None
+        image_trans, image_epi = correct_image(
+            config, image_trans_raw, image_epi_raw, calib_param_path, toss_red
+        )
         rprint("Detecting colonies for", image_label)
         contours = detect_colony(image_trans, config)
         contours, df = colony_qc(image_trans, contours, config)
@@ -56,10 +56,10 @@ def detect_colony_batch(
             how="horizontal",
         )
         df = _modify_output_object_colony_detection(df, image_label, config)
-        # contours = [
-        #     cnt + np.array([config["crop_x_min"], config["crop_y_min"]])
-        #     for cnt in contours
-        # ]
+        contours = [
+            cnt + np.array([config["crop_x_min"], config["crop_y_min"]])
+            for cnt in contours
+        ]
 
         image_trans_pin = add_contours(
             image_trans_raw,
@@ -468,8 +468,8 @@ def _modify_output_object_colony_detection(
     df: pl.DataFrame, barcode: str, config: dict
 ) -> pl.DataFrame:
     return df.with_columns(
-        # center_x=pl.col("center_x") + config["crop_x_min"],
-        # center_y=pl.col("center_y") + config["crop_y_min"],
+        center_x=pl.col("center_x") + config["crop_x_min"],
+        center_y=pl.col("center_y") + config["crop_y_min"],
         plate_barcode=pl.lit(barcode),
     ).with_row_index("colony_index")
 

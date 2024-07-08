@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 """This step selects a given number of colonies detected by the previous step from each 
     plate group.

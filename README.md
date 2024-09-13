@@ -10,7 +10,7 @@ Future plans include:
 ## Dependencies
 
 The program runs on Python 3 and is tested with 3.10, third-party packages are:
-- NumPy, SciPy, pandas, Polars, scikit-learn, scikit-image, scikit-bio, Matplotlib, seaborn
+- NumPy, SciPy, pandas, Polars, pyarrow, scikit-learn, scikit-image, scikit-bio, biom-format, Matplotlib, seaborn
 - opencv-python, Pillow
 - python-tsp
 - PyYAML, tqdm

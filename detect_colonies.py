@@ -38,7 +38,7 @@ def detect_colony_batch(
     ):
         image_trans_raw = cv.imread(image_trans_path, 0).astype(np.float32)
         image_epi_raw = cv.imread(image_epi_path, cv.IMREAD_COLOR).astype(np.float32)
-        calib_param_path = None
+        # calib_param_path = None
         image_trans, image_epi = correct_image(
             config, image_trans_raw, image_epi_raw, calib_param_path, toss_red
         )
@@ -208,14 +208,7 @@ def correct_image(
         image_epi = crop(image_epi_raw, crop_x_min, crop_x_max, crop_y_min, crop_y_max)
         image_epi_corr = image_epi / calib_param["image_epi_calib"]
         if toss_red:
-            # image_trans_corr = (
-            #     cv.cvtColor(
-            #         (image_epi.max() - image_epi) / calib_param["image_epi_calib"],
-            #         cv.COLOR_BGR2GRAY,
-            #     )
-            #     * config["calib_contrast_trans_alpha"]
-            #     + config["calib_contrast_trans_beta"]
-            # )
+
             image_trans_corr = cv.cvtColor(
                 image_epi.max() - image_epi, cv.COLOR_BGR2GRAY
             )

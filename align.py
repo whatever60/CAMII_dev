@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 import glob
 import tempfile
@@ -18,6 +18,7 @@ import matplotlib.pyplot as plt
 from rich import print as rprint
 
 from data_transform import hsi_pca
+from utils import _coco_to_contours
 
 
 class PatienceLogger:
@@ -272,14 +273,25 @@ def get_query2target_func(
     ty: torch.Tensor,
     sx: torch.Tensor,
     sy: torch.Tensor,
-    mean_q: torch.Tensor,
-    std_q: torch.Tensor,
-    mean_t: torch.Tensor,
-    std_t: torch.Tensor,
+    mean_q: torch.Tensor = torch.tensor([0.0, 0.0]),
+    std_q: torch.Tensor = torch.tensor([1.0, 1.0]),
+    mean_t: torch.Tensor = torch.tensor([0.0, 0.0]),
+    std_t: torch.Tensor = torch.tensor([1.0, 1.0]),
     flip: tuple[bool, bool] = (False, False),
 ) -> Callable:
+    if isinstance(mean_q, np.ndarray):
+        mean_q = torch.from_numpy(mean_q).float()
+    if isinstance(std_q, np.ndarray):
+        std_q = torch.from_numpy(std_q).float()
+    if isinstance(mean_t, np.ndarray):
+        mean_t = torch.from_numpy(mean_t).float()
+    if isinstance(std_t, np.ndarray):
+        std_t = torch.from_numpy(std_t).float()
+
     def ret(query: np.ndarray) -> np.ndarray:
-        query_std = torch.from_numpy((query - mean_q) / std_q).float()
+        if isinstance(query, np.ndarray):
+            query = torch.from_numpy(query).float()
+        query_std = (query - mean_q) / std_q
         query_mapped_std = affine_transform(
             torch.tensor([a, b, tx, ty, sx, sy]), flip_tensor(query_std, *flip)
         )
@@ -411,7 +423,12 @@ def find_affine(
 
 
 def _find_affine(
-    query, target, weight, log, hparams: dict[str, float], params_init: torch.Tensor = None
+    query,
+    target,
+    weight,
+    log,
+    hparams: dict[str, float],
+    params_init: torch.Tensor = None,
 ) -> PatienceLogger:
     # default hyperparameters
     # lr = 0.005
@@ -450,8 +467,9 @@ def _find_affine(
 
     logger = PatienceLogger(patience)
     logger.hparams = hparams
-    epoch = 0
-    while epoch < max_epochs:
+    logger.log(0, 1e10, params)
+    epoch = 1
+    while epoch <= max_epochs:
         optimizer.zero_grad()
         nn_loss, mnn_loss, rot_loss, stre_loss = loss_function(
             params, query, target, weight=weight
@@ -837,7 +855,8 @@ class Aligner:
                     self.hsi_coco_contour_path = glob.glob(
                         f"{output_dir}/*_annot.json"
                     )[0]
-            _contours_hsi = _load_coco_to_contour(self.hsi_coco_contour_path)
+            with open(self.hsi_coco_contour_path) as f:
+                _contours_hsi = _coco_to_contours(json.load(f))
             if "picking_status" in self.metadata_hsi.columns:
                 _contours_hsi = [
                     c
@@ -861,7 +880,14 @@ class Aligner:
         mean_t: np.ndarray = None,
         std_t: np.ndarray = None,
         log: int = 1,
+        _use_prefit: bool = False,
     ) -> None:
+        if _use_prefit and (query, target) != ("isolate", "rgb"):
+            raise ValueError(
+                "_use_prefit is set to True, but only isolate to rgb is prefit."
+            )
+        _to_fit = True
+
         coords_q = getattr(self, f"coords_{query}")
         coords_t = getattr(self, f"coords_{target}")
         # if query and target are rgb and hsi or the other way around, and both have
@@ -874,24 +900,37 @@ class Aligner:
             std_q = np.array(pic_q.shape[:2][::-1]) / 3
             std_t = np.array(pic_t.shape[:2][::-1]) / 3
         if (query, target) == ("isolate", "rgb"):
+            if _use_prefit:
+                _to_fit = False
             robot_factor = 0.066
             if mean_q is None:
                 mean_q = coords_t.mean(axis=0) * robot_factor
             if std_q is None:
                 std_q = coords_t.std(axis=0) * robot_factor
 
-        q2t_params, *q2t_stats, q2t_flip, hparams = find_affine(
-            coords_q,
-            coords_t,
-            log=log,
-            flip=flip,
-            mean_q=mean_q,
-            std_q=std_q,
-            mean_t=mean_t,
-            std_t=std_t,
-            hparams=hparams,
-            params_init=params_init,
-        )
+        if _to_fit:
+            q2t_params, *q2t_stats, q2t_flip, hparams = find_affine(
+                coords_q,
+                coords_t,
+                log=log,
+                flip=flip,
+                mean_q=mean_q,
+                std_q=std_q,
+                mean_t=mean_t,
+                std_t=std_t,
+                hparams=hparams,
+                params_init=params_init,
+            )
+        else:
+            q2t_params = np.array([1.0, 0.0, -8.81858, -6.71644, 15.3416, 15.3002], dtype=np.float32)
+            q2t_stats = [
+                np.array([0.0, 0.0], dtype=np.float32),
+                np.array([1.0, 1.0], dtype=np.float32),
+                np.array([0.0, 0.0], dtype=np.float32),
+                np.array([1.0, 1.0], dtype=np.float32),
+            ]
+            q2t_flip = (False, False)
+            hparams = None
         q2t_func = get_query2target_func(*q2t_params, *q2t_stats, q2t_flip)
         t2q_func = get_query2target_func_rev(*q2t_params, *q2t_stats, q2t_flip)
         setattr(self, f"_func_{target}_{query}2{target}", q2t_func)
@@ -980,10 +1019,13 @@ class Aligner:
         if modality_t is None:
             modality_t = modality
         if modality == modality_t:
-            contours = getattr(self, f"contours_{modality}")
-            x, y, w, h = cv.boundingRect(contours[index])
-            size = max(w, h) if not size else size
-            center = np.array([x + w / 2, y + h / 2])
+            if not size:
+                contours = getattr(self, f"contours_{modality}")
+                x, y, w, h = cv.boundingRect(contours[index])
+                size = max(w, h)
+                center = np.array([x + w / 2, y + h / 2])
+            else:
+                center = getattr(self, f"coords_{modality}")[index]
         else:
             if not size:
                 raise ValueError(

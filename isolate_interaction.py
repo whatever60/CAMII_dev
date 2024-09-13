@@ -22,7 +22,7 @@ from utils import _get_time_points, read_table
 
 
 def _read_colony_metadata(
-    colony_metadata_dir: str, time: int | str = "default"
+    colony_metadata_dir: str, time: int | str = "default", plate_barcode_col: str = "plate_barcode"
 ) -> pd.DataFrame:
     # read colony metadata from CAMII picking pipeline
     colony_metadatas = []
@@ -30,12 +30,12 @@ def _read_colony_metadata(
         *_get_time_points(colony_metadata_dir, ext="_metadata.csv", time=time)
     ):
         df_colony = pd.read_csv(f)
-        if (df_colony.plate_barcode != p).any():
+        if (df_colony[plate_barcode_col] != p).any():
             rprint(
                 f"WARNING: plate barcode in colony metadata does not match file name: {p}."
             )
         df_colony["colony_barcode"] = (
-            df_colony.plate_barcode
+            df_colony[plate_barcode_col]
             + "_"
             + df_colony.center_x.round(3).astype(str)
             + "x"
@@ -95,6 +95,7 @@ def _align_isolate_colony(
     colony_plate_key: str = "plate_barcode",
     isolate_plate_key: str = "src_plate",
     log: int = 1,
+    _use_prefit: bool = False,
 ) -> tuple[list[str], pd.Series]:
     isolate2colony = []
     bad_colonies = []
@@ -112,7 +113,7 @@ def _align_isolate_colony(
         aligner._meta_rgb = colony_plate
         aligner._meta_isolate = isolate_plate
         query, target = "isolate", "rgb"
-        aligner.fit(query=query, target=target, flip=False, log=log)
+        aligner.fit(query=query, target=target, flip=False, _use_prefit=_use_prefit, log=log)
         aligner.transform(query=query, target=target)
 
         g = getattr(aligner, f"_graph_{target}_{query}")

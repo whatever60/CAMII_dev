@@ -91,7 +91,7 @@ def parse_dir_for_time_series(input_dir, ext: str = "png") -> dict[str, dict[int
 
 
 def _get_time_points(
-    input_dir: dict, time: int | str | dict[str, int | str] = "max", ext: str = "png", missing_tp: str = "silence",
+    input_dir: dict, time: int | str | dict[str, int | str] = "default", ext: str = "png", missing_tp: str = "silence",
 ) -> tuple[list[str], list[str]]:
     """
     Processes an rgb dictionary to determine appropriate time points and compiles lists
@@ -168,7 +168,7 @@ def _get_time_points(
 
 
 def read_file_list(
-    input_dir: str, time: int | str = "max"
+    input_dir: str, time: int | str = "default"
 ) -> tuple[list[str], list[str], list[str]]:
     """
     Reads a list of image files from a directory, ensuring consistency between red and

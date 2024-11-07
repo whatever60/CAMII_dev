@@ -17,7 +17,7 @@ from PIL import Image
 import matplotlib.pyplot as plt
 from rich import print as rprint
 
-from data_transform import hsi_pca
+from hyperspectral_processing import hsi_pca
 from utils import _coco_to_contours
 
 
@@ -652,7 +652,7 @@ class Aligner:
         rgb_coco_contour_path: str = None,  # json
         hsi_coco_contour_path: str = None,  # json
         zotu_count_files: list[str] | str = None,  # tsv
-        isolate_metadata_file: str = None,  # tsv
+        isolate_metadata_path: str = None,  # tsv
     ):
         self.plate_barcode = plate_barcode
         self.rgb_png_path = rgb_png_path
@@ -664,7 +664,7 @@ class Aligner:
         self.rgb_coco_contour_path = rgb_coco_contour_path
         self.hsi_coco_contour_path = hsi_coco_contour_path
         self.zotu_count_files = zotu_count_files
-        self.isolate_metadata_file = isolate_metadata_file
+        self.isolate_metadata_path = isolate_metadata_path
 
     # def get_coords(self, modality: str) -> np.ndarray:
     #     if modality == "rgb":
@@ -782,10 +782,10 @@ class Aligner:
     @property
     def metadata_isolate(self) -> pd.DataFrame:
         if not hasattr(self, "_meta_isolate"):
-            if self.isolate_metadata_file is None:
-                raise ValueError("isolate_metadata_file is not specified")
+            if self.isolate_metadata_path is None:
+                raise ValueError("isolate_metadata_path is not specified")
             self._meta_isolate = pd.read_table(
-                self.isolate_metadata_file, index_col="sample"
+                self.isolate_metadata_path, index_col="sample"
             ).query("src_plate == @self.plate_barcode")
         return self._meta_isolate
 
@@ -992,7 +992,7 @@ class Aligner:
         index: int,
         size: int = 0,
         padding: int | float = 0,
-        modality_t: str = None,
+        modality_t: str | None = None,
         add_contour: str = "none",
         _use_arr: bool = False,
     ) -> np.ndarray:
@@ -1019,8 +1019,8 @@ class Aligner:
         if modality_t is None:
             modality_t = modality
         if modality == modality_t:
+            contours = getattr(self, f"contours_{modality}")
             if not size:
-                contours = getattr(self, f"contours_{modality}")
                 x, y, w, h = cv.boundingRect(contours[index])
                 size = max(w, h)
                 center = np.array([x + w / 2, y + h / 2])

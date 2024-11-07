@@ -1,6 +1,13 @@
 #*.jpg
 #*.png
 #*.bmp
+*.ipynb
+
+.vscode
+
+figs/
+figs_demo/
+temp*
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

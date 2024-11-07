@@ -117,6 +117,7 @@ def _get_time_points(
             time_b = time[barcode]
         else:
             time_b = time
+
         if isinstance(time_b, int):
             if time_b in time_points:
                 image_label_list.append(barcode)
@@ -139,15 +140,17 @@ def _get_time_points(
                     )
         else:
             if time_points:
-                # if -1 is a time point, use it as the default
+                # if -1 is a time point, use it as the default; otherwise, use max
                 if time_b == "default":
                     if -1 in time_points:
                         selected_time = -1
                     else:
-                        raise ValueError(
-                            f"Invalid time argument {time_b}. Must be 'default'."
-                        )
-                else:
+                        # raise ValueError(
+                        #     f"Invalid time argument {time_b}. Must be 'default'."
+                        # )
+                        time_b = "max"
+
+                if time_b != "default":
                     tps = [i for i in time_points.keys() if i >= 0]
                     if time_b == "min":
                         selected_time = min(tps)

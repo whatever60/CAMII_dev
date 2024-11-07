@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-"""This step selects a given number of colonies detected by the previous step from each 
+"""This step selects a given number of colonies detected by the previous step from each
     plate group.
 
 Input data to this step:
@@ -11,16 +11,16 @@ Output data from this step:
     For each plate:
         - A gray scale image with colony segmentation. Selected colonies highlighted.
         - A RGB image with colony segmentation. Selected colonies highlighted.
-        - A csv file with the same number of rows as the number of colonies in the 
-            plate, where the first column is 0 if not selected, 1 if selected, and -1 if 
+        - A csv file with the same number of rows as the number of colonies in the
+            plate, where the first column is 0 if not selected, 1 if selected, and -1 if
             excluded, and the second column is the picking order of the colony.
-        - A 4 column csv file with xy coordinate of boundary points on the colony 
+        - A 4 column csv file with xy coordinate of boundary points on the colony
             polygons. Columns are index, Label, X, Y, where Label is the index of colony.
         - A two column csv file with xy coordinate of the center of selected colonies,
             ordered by picking order. No header.
 
-This step involves human in the loop. Specifically, The 4 column csv file can be 
-    iteratively refined in ImageJ to exclude unwanted colonies. When the user is 
+This step involves human in the loop. Specifically, The 4 column csv file can be
+    iteratively refined in ImageJ to exclude unwanted colonies. When the user is
     satistified with the picking, colony picking is finalized.
 """
 
@@ -72,7 +72,7 @@ def colony_feat_pca(df_contour: pl.DataFrame) -> pl.DataFrame:
     #     "Bepistd",
     # ]
     # select all number columns
-    feats_for_pca = df_contour.select(pl.col(pl.NUMERIC_DTYPES)).columns
+    feats_for_pca = df_contour.select(pl.selectors.numeric()).columns
     contour_feat = df_contour[feats_for_pca].to_pandas().drop(["colony_index"], axis=1)
     # fill na with mean
     contour_feat = contour_feat.fillna(contour_feat.mean())
@@ -408,7 +408,7 @@ def _get_new_idx(
     pick_counter: dict,  # will be modified in place
     dist: np.ndarray,
     choices: np.ndarray,  # will be modified in place
-) -> np.ndarray:
+) -> tuple[np.ndarray, np.ndarray, dict]:
     i = i % idx.shape[0]
     j = idx[i]
     choices[j] = False
@@ -425,7 +425,7 @@ def _get_new_idx(
     return idx, choices, pick_counter
 
 
-def process_metadata(metadata_path: str) -> dict[str, tuple[int, list[str], list[str]]]:
+def process_metadata(metadata_path: str) -> dict[str, tuple[list[str], list[int], int]]:
     metadata = pd.read_csv(metadata_path)
     g = metadata.groupby("pick_group")
     group2barcodes = g["barcode"].apply(list).to_dict()
@@ -470,11 +470,11 @@ def pick_colony_init(
         dfs_contour = [
             pl.read_csv(
                 os.path.join(input_dir, f"{b}_metadata.csv"),
-                dtypes={
-                    "post_pass": bool,
-                    "pass_initial": bool,
-                    "need_pp": bool,
-                    "direct_pass": bool,
+                schema_overrides={
+                    "post_pass": pl.Boolean,
+                    "pass_initial": pl.Boolean,
+                    "need_pp": pl.Boolean,
+                    "direct_pass": pl.Boolean,
                 },
             )
             .with_columns(barcode=pl.lit(b))
@@ -541,7 +541,7 @@ def pick_colony_init(
             .then(1)
             .otherwise(2)
         )
-    
+
         dfs_contour = df_contour.drop(
             ["contour_idx", "contour_idx_group"]
         ).partition_by(["barcode"], as_dict=True)
@@ -698,11 +698,11 @@ def pick_colony_post(
             df_contour = (
                 pl.read_csv(
                     os.path.join(data_dir, f"{b}_metadata_{start_from}.csv"),
-                    dtypes={
-                        "post_pass": bool,
-                        "pass_initial": bool,
-                        "need_pp": bool,
-                        "direct_pass": bool,
+                    schema_overrides={
+                        "post_pass": pl.Boolean,
+                        "pass_initial": pl.Boolean,
+                        "need_pp": pl.Boolean,
+                        "direct_pass": pl.Boolean,
                     },
                 )
                 .with_columns(barcode=pl.lit(b))
@@ -872,7 +872,7 @@ def pick_colony_final(
     data_dir: str,
     metadata_path: str,
     output_dir: str,
-    tsp_method: str = None,
+    tsp_method: str | None = None,
     time_label="default",
     _seed: int = 44,
 ) -> None:
@@ -891,19 +891,19 @@ def pick_colony_final(
     )
     barcode2img_trans = {i: t for i, t in zip(image_label_list, image_trans_list)}
     os.makedirs(output_dir, exist_ok=True)
-    for group, (barcodes, num_colonies_plate, num_colonies) in tqdm(process_metadata(
-        metadata_path
-    ).items()):
+    for group, (barcodes, num_colonies_plate, num_colonies) in tqdm(
+        process_metadata(metadata_path).items()
+    ):
         dfs_contour = []
         for b in barcodes:
             df_contour = pl.read_csv(
                 os.path.join(data_dir, f"{b}_metadata_final.csv"),
-                dtypes={
-                    "post_pass": bool,
-                    "picking_status": int,
-                    "pass_initial": bool,
-                    "need_pp": bool,
-                    "direct_pass": bool,
+                schema_overrides={
+                    "post_pass": pl.Boolean,
+                    "picking_status": pl.Int64,
+                    "pass_initial": pl.Boolean,
+                    "need_pp": pl.Boolean,
+                    "direct_pass": pl.Boolean,
                 },
             )
             dfs_contour.append(df_contour)
@@ -1004,7 +1004,9 @@ def pick_colony_final(
         fig.savefig(os.path.join(output_dir, f"pca_{group}.png"), dpi=300)
 
 
-def _tsp(data: np.ndarray, tsp_method: str = "heuristic", _seed: int=44) -> np.ndarray:
+def _tsp(
+    data: np.ndarray, tsp_method: str = "heuristic", _seed: int = 44
+) -> np.ndarray:
     """Reorder picked colonies to minimize movement"""
     random.seed(_seed)
     if tsp_method not in ["heuristic", "exact"]:
@@ -1052,7 +1054,8 @@ if __name__ == "__main__":
     #     # tsp_method="heuristic",
     #     tsp_method="",
     # )
-    matplotlib.use("TkAgg")
+    plt.rcParams["pdf.fonttype"] = 42
+    plt.rcParams["svg.fonttype"] = "none"
 
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="command")

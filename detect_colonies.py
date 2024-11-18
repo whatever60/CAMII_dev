@@ -79,6 +79,7 @@ def detect_colony_batch(
             df,
             contours,
             image_label,
+            image_epi_path,
             image_trans_pin,
             image_epi_pin,
             output_dir,
@@ -88,7 +89,7 @@ def detect_colony_batch(
 def detect_colony_single(
     input_path: str,
     output_dir: str,
-    calib_param_path: str = None,
+    calib_param_path: str | None = None,
     config_path: str = f"{os.path.dirname(__file__)}/test_data/configs/configure.yaml",
 ) -> None:
     """Colony detection for a single image follows the same logic as batch detection,
@@ -164,6 +165,7 @@ def detect_colony_single(
         df,
         contours,
         image_label,
+        input_path,
         image_trans_pin,
         image_epi=None,
         output_dir=output_dir,
@@ -172,9 +174,9 @@ def detect_colony_single(
 
 def correct_image(
     config: dict,
-    image_trans_raw: np.ndarray = None,
-    image_epi_raw: np.ndarray = None,
-    calib_param_path: str = None,  # path to a npz file
+    image_trans_raw: np.ndarray | None = None,
+    image_epi_raw: np.ndarray | None = None,
+    calib_param_path: str | None = None,  # path to a npz file
     toss_red: bool = False,
 ) -> tuple[np.ndarray, np.ndarray]:
     # load two images and calib data
@@ -468,11 +470,12 @@ def _modify_output_object_colony_detection(
 
 
 def _save_outputs_colony_detection(
-    df,
+    df: pl.DataFrame,
     contours: list[np.ndarray],
     barcode: str,
+    image_epi_path: str,
     image_trans: np.ndarray,
-    image_epi: np.ndarray,
+    image_epi: np.ndarray | None,
     output_dir: str,
     toss_red: bool = False,
 ) -> None:
@@ -488,7 +491,7 @@ def _save_outputs_colony_detection(
     #     "file_name": None,
     # }
     contour_border_coco_dict["images"][0]["file_name"] = (
-        f"{barcode}_rgb_white.png" if toss_red else f"{barcode}_rgb_red.png"
+        f"{barcode}_rgb_white.png" if toss_red else os.path.basename(image_epi_path)
     )
     with open(f"{output_dir}/{barcode}_annot.json", "w") as f:
         json.dump(contour_border_coco_dict, f)

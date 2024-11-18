@@ -9,7 +9,7 @@ for time_point in 1 3 4 5; do
         --time_point $time_point
 done
 
-for time_point in min max 1 3 4 5; do
+for time_point in 1 3 4 5; do
     $script_dir/detect_colonies.py \
         -i $data_dir/rgb \
         -o $data_dir/colony_detection_rgb/d$time_point \
@@ -17,6 +17,15 @@ for time_point in min max 1 3 4 5; do
         -c $script_dir/test_data/configs/configure_small.yaml \
         -t $time_point
 done
+for time_point in min max; do
+    $script_dir/detect_colonies.py \
+        -i $data_dir/rgb \
+        -o $data_dir/colony_detection_rgb/$time_point \
+        -b $script_dir/test_data/parameters/calib_parameter.npz \
+        -c $script_dir/test_data/configs/configure_small.yaml \
+        -t $time_point
+done
+
 
 $script_dir/select_colonies.py init \
     -p $data_dir/rgb \

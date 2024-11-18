@@ -4,6 +4,7 @@ import numpy as np
 import cv2 as cv
 from PIL import Image
 import matplotlib.pyplot as plt
+from matplotlib.figure import Figure
 
 
 class CAMIIColonyDetector:
@@ -15,14 +16,14 @@ class CAMIIColonyDetector:
         fg_gaussian_kernel: int = 5,
         clahe_clip_limit: float = 2.0,
         clahe_tile_grid_size: tuple[int, int] = (4, 4),
-        canny_upper_percentile: float = 80,
-        calib_param: str | np.ndarray = None,
+        canny_upper_percentile: int = 80,
+        calib_param: str | None | np.ndarray = None,
         calib_contrast_alpha: float = 1,
         calib_contrast_beta: float = 0,
-        crop_x_min: int = None,
-        crop_x_max: int = None,
-        crop_y_min: int = None,
-        crop_y_max: int = None,
+        crop_x_min: int | None = None,
+        crop_x_max: int | None = None,
+        crop_y_min: int | None = None,
+        crop_y_max: int | None = None,
     ):
         self.bg_gaussian_kernel = bg_gaussian_kernel
         self.bg_threshold_block_size = bg_threshold_block_size
@@ -48,7 +49,12 @@ class CAMIIColonyDetector:
         return image
 
     def crop_image(
-        self, image: np.ndarray, x_min: int, x_max: int, y_min: int, y_max: int
+        self,
+        image: np.ndarray,
+        x_min: int | None,
+        x_max: int | None,
+        y_min: int | None,
+        y_max: int | None,
     ) -> np.ndarray:
         pil_image = Image.fromarray(image)
         x_min = x_min if x_min is not None else 0
@@ -58,7 +64,7 @@ class CAMIIColonyDetector:
         cropped_image = pil_image.crop((x_min, y_min, x_max, y_max))
         return np.array(cropped_image)
 
-    def load_calibration(self, calib_param: str | np.ndarray) -> np.ndarray:
+    def load_calibration(self, calib_param: str | np.ndarray | None) -> np.ndarray:
         if calib_param is None:
             return np.array(1)
         elif isinstance(calib_param, str):
@@ -66,10 +72,18 @@ class CAMIIColonyDetector:
                 raise FileNotFoundError(
                     f"Calibration parameter file '{calib_param}' not found."
                 )
-            calib_param = np.load(calib_param)
+            if calib_param.endswith(".npy"):
+                calib_param: np.ndarray = np.load(calib_param)
+            elif calib_param.endswith(".npz"):
+                calib_param: np.ndarray = np.load(calib_param)["arr_0"]
+            else:
+                raise ValueError(
+                    f"Unsupported calibration parameter file format: {calib_param}"
+                )
         return calib_param
 
     def correct_image(self, image: np.ndarray) -> np.ndarray:
+        print(self.calib_param.keys())
         corrected_image = (
             image / self.calib_param
         ) * self.calib_contrast_alpha + self.calib_contrast_beta
@@ -77,7 +91,7 @@ class CAMIIColonyDetector:
 
     def detect(
         self, image: str | np.ndarray, diagnose: bool = False
-    ) -> list[np.ndarray] | tuple[list[np.ndarray], plt.Figure, np.ndarray]:
+    ) -> list[np.ndarray] | tuple[list[np.ndarray], Figure, np.ndarray]:
         arr = self.load_image(image)
         cropped_image = self.crop_image(
             arr, self.crop_x_min, self.crop_x_max, self.crop_y_min, self.crop_y_max
@@ -221,12 +235,13 @@ class CAMIIColonyDetector:
         else:
             # contours = self.contour_coords_reverse_crop(contours)
             return contours
-    
+
     def contour_coords_reverse_crop(self, contours: list[np.ndarray]) -> np.ndarray:
         delta_x = 0 if self.crop_x_min is None else self.crop_x_min
         delta_y = 0 if self.crop_y_min is None else self.crop_y_min
         contours = tuple(cnt + np.array([delta_x, delta_y]) for cnt in contours)
         return contours
+
 
 # Example usage:
 # processor = CAMIIColonyDetector(3, 11, 2, 5, 90, 'calib.npz', 1.0, 0.0, 10, 200, 10, 200)

@@ -37,7 +37,7 @@ ARROWSTYLE = "Simple, tail_width={}, head_width={}, head_length={}"
 
 
 def read_subtree(
-    newick_path: str, nodes_of_interest: list[str] = None
+    newick_path: str, nodes_of_interest: list[str] | None = None
 ) -> Phylo.BaseTree.Tree:
     if nodes_of_interest is None:
         return Phylo.read(newick_path, "newick")

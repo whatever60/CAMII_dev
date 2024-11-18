@@ -30,7 +30,6 @@ import os
 from itertools import cycle
 import json
 import warnings
-import warnings
 
 import numpy as np
 import numba
@@ -987,7 +986,6 @@ def pick_colony_final(
             ["pca1", "pca2", "barcode", "picking_status"]
         ].to_pandas()
         data.columns = ["PCA1", "PCA2", "Plate barcode", "Picking status"]
-
         # plot with no border and small size
         sns.scatterplot(
             x="PCA1",
@@ -1054,6 +1052,7 @@ if __name__ == "__main__":
     #     # tsp_method="heuristic",
     #     tsp_method="",
     # )
+    matplotlib.use('agg')
     plt.rcParams["pdf.fonttype"] = 42
     plt.rcParams["svg.fonttype"] = "none"
 

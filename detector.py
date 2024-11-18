@@ -83,7 +83,6 @@ class CAMIIColonyDetector:
         return calib_param
 
     def correct_image(self, image: np.ndarray) -> np.ndarray:
-        print(self.calib_param.keys())
         corrected_image = (
             image / self.calib_param
         ) * self.calib_contrast_alpha + self.calib_contrast_beta

@@ -287,7 +287,7 @@ def _detect(
 
 def detect_colony(
     image_trans: np.ndarray, config: dict
-) -> tuple[list[np.ndarray], pl.DataFrame]:
+) -> pl.DataFrame:
     if config.get("simple_detect"):
         contours = _detect_simple(image_trans)
     else:

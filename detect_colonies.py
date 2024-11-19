@@ -178,12 +178,12 @@ def correct_image(
     image_epi_raw: np.ndarray | None = None,
     calib_param_path: str | None = None,  # path to a npz file
     toss_red: bool = False,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray | None, np.ndarray | None]:
     # load two images and calib data
     if calib_param_path is None:
-        calib_param = {"image_trans_calib": 1, "image_epi_calib": 1}
+        calib_param = {"image_trans_calib": np.array(1), "image_epi_calib": np.array(1)}
     else:
-        calib_param = np.load(calib_param_path)
+        calib_param: dict[str, np.ndarray] = np.load(calib_param_path)
 
     # crop images
     crop_x_min = config["crop_x_min"]
@@ -197,7 +197,17 @@ def correct_image(
         image_trans = crop(
             image_trans_raw, crop_x_min, crop_x_max, crop_y_min, crop_y_max
         )
-        image_trans_corr = (
+        if calib_param_path is None:
+            calib_param["image_trans_calib"] = np.ones_like(image_trans)
+        image_dim = image_trans.shape[:2]
+        calib_dim = calib_param["image_trans_calib"].shape[:2]
+        if image_dim != calib_dim:
+            rprint(
+                "WARNING: Image dimension does not match calibration parameters."
+                f"Resizing image from {image_dim} to {calib_dim}."
+            )
+            image_trans = cv.resize(image_trans, calib_dim[::-1])
+        image_trans_corr: np.ndarray = (
             image_trans
             / calib_param["image_trans_calib"]
             * config["calib_contrast_trans_alpha"]
@@ -208,10 +218,19 @@ def correct_image(
         image_epi_corr = None
     else:
         image_epi = crop(image_epi_raw, crop_x_min, crop_x_max, crop_y_min, crop_y_max)
-        image_epi_corr = image_epi / calib_param["image_epi_calib"]
+        if calib_param_path is None:
+            calib_param["image_epi_calib"] = np.ones_like(image_epi)
+        image_dim = image_epi.shape[:2]
+        calib_dim = calib_param["image_epi_calib"].shape[:2]
+        if image_dim != calib_dim:
+            rprint(
+                "WARNING: Image dimension does not match calibration parameters."
+                f"Resizing image from {image_dim} to {calib_dim}."
+            )
+            image_epi = cv.resize(image_epi, calib_dim[::-1])
+        image_epi_corr: np.ndarray = image_epi / calib_param["image_epi_calib"]
         if toss_red:
-
-            image_trans_corr = cv.cvtColor(
+            image_trans_corr: np.ndarray = cv.cvtColor(
                 image_epi.max() - image_epi, cv.COLOR_BGR2GRAY
             )
     return image_trans_corr, image_epi_corr
@@ -285,9 +304,7 @@ def _detect(
     return contours
 
 
-def detect_colony(
-    image_trans: np.ndarray, config: dict
-) -> pl.DataFrame:
+def detect_colony(image_trans: np.ndarray, config: dict) -> pl.DataFrame:
     if config.get("simple_detect"):
         contours = _detect_simple(image_trans)
     else:
@@ -517,7 +534,7 @@ def _contours_to_coco(contours: list[np.ndarray]) -> dict:
         for cnt in contours
     ):
         raise ValueError("Contours must be a list of shape (n, 1, 2).")
-    
+
     data = {
         "images": [{"id": 1, "width": None, "height": None, "file_name": None}],
         "annotations": [

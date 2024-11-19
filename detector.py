@@ -5,6 +5,7 @@ import cv2 as cv
 from PIL import Image
 import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
+from scipy.stats import f
 
 
 class CAMIIColonyDetector:
@@ -83,6 +84,19 @@ class CAMIIColonyDetector:
         return calib_param
 
     def correct_image(self, image: np.ndarray) -> np.ndarray:
+        """Correct image using calibration parameters.
+        If image dimension is different from calibration parameters, resize image to
+        calibration parameters.
+        """
+        if self.calib_param.ndim != 0:
+            image_dim = image.shape[:2]
+            calib_dim = self.calib_param.shape[:2]
+            if image_dim != calib_dim:
+                print(
+                    "WARNING: Image dimension does not match calibration parameters."
+                    f"Resizing image from {image_dim} to {calib_dim}."
+                )
+                image = cv.resize(image, calib_dim[::-1])
         corrected_image = (
             image / self.calib_param
         ) * self.calib_contrast_alpha + self.calib_contrast_beta

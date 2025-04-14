@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""Plot interaction plot for CAMII isolates.
-"""
+"""Plot interaction plot for CAMII isolates."""
 
 import argparse
 import tempfile
@@ -16,6 +15,7 @@ import pandas as pd
 import Bio
 from Bio import SeqIO
 from Bio import Phylo
+from Bio.Phylo import Newick
 import dendropy
 from transformers import AutoTokenizer
 import matplotlib
@@ -27,9 +27,10 @@ from matplotlib.patches import FancyArrowPatch
 from matplotlib.lines import Line2D
 from pycirclize import Circos, config, utils
 from pycirclize.sector import Sector
+from pycirclize.tree import TreeViz
 
 
-matplotlib.use("TkAgg")
+# matplotlib.use("TkAgg")
 plt.rcParams["pdf.fonttype"] = 42
 
 
@@ -448,18 +449,22 @@ def add_title(sector: Sector, fontsize: int) -> None:
 
 
 def add_tree(
-    sector: Sector, r_lim: tuple[float, float], tree: Bio.Phylo.Newick.Tree
-) -> None:
+    sector: Sector,
+    r_lim: tuple[float, float],
+    tree: Newick.Tree,
+    outer: bool = False,
+    ignore_branch_length: bool = True,
+) -> TreeViz | None:
     tree_track = sector.add_track(r_lim)
     tree_track.axis(fc=None, alpha=0, lw=0)
     # tree_track.tree(tree, leaf_label_size=0)
     if tree.count_terminals() == 1:
         return
-    tree_track.tree(
+    return tree_track.tree(
         tree,
-        outer=False,
+        outer=outer,
         align_leaf_label=True,
-        ignore_branch_length=True,
+        ignore_branch_length=ignore_branch_length,
         line_kws=dict(lw=1),
         # leaf_label_rmargin=32,
         leaf_label_size=0,
@@ -771,9 +776,7 @@ if __name__ == "__main__":
             end=sector_space / 2,
         )
 
-        sname2xs = (
-            {}
-        )  # map sector name to a dict that maps sequence name to x coordinate
+        sname2xs = {}  # map sector name to a dict that maps sequence name to x coordinate
         for i, (sector_name, tree, color) in enumerate(
             zip(sector_names, [tree_16s, tree_its], colors)
         ):

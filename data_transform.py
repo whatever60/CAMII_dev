@@ -13,46 +13,93 @@ from tqdm.auto import tqdm
 from hyperspectral_processing import process_bil2npz, process_npz2png
 
 
+def load_bmp_as_rgba(filepath: str) -> np.ndarray:
+    """Loads a 24-bit or 32-bit uncompressed BMP file and returns an RGBA image.
+
+    Ensures shape is (H, W, 4) with alpha channel set to 255 if not present.
+
+    Args:
+        filepath: Path to the BMP image.
+
+    Returns:
+        NumPy array of shape (height, width, 4) with dtype=np.uint8
+    """
+    with open(filepath, "rb") as f:
+        f.seek(10)
+        pixel_data_offset = int.from_bytes(f.read(4), byteorder="little")
+
+        f.seek(18)
+        width = int.from_bytes(f.read(4), byteorder="little")
+        height = int.from_bytes(f.read(4), byteorder="little")
+        f.seek(28)
+        bits_per_pixel = int.from_bytes(f.read(2), byteorder="little")
+        channels = bits_per_pixel // 8
+
+        if bits_per_pixel not in (24, 32):
+            raise ValueError(f"Unsupported BMP bit depth: {bits_per_pixel}")
+
+        row_raw = width * channels
+        row_padded = ((row_raw + 3) // 4) * 4
+        padding = row_padded - row_raw
+
+        f.seek(pixel_data_offset)
+        rows = []
+        for _ in range(height):
+            row = f.read(row_raw)
+            f.read(padding)  # skip padding
+            row_array = np.frombuffer(row, dtype=np.uint8).reshape((width, channels))
+            rows.append(row_array)
+
+        img = np.stack(rows[::-1], axis=0)  # bottom-up to top-down
+
+        if channels == 3:
+            alpha = np.full((height, width, 1), 255, dtype=np.uint8)
+            img = np.concatenate((img, alpha), axis=-1)
+
+        return img
+
+
 def process_bmp(input_dir: str, output_dir: str, time_point: int | None = None) -> None:
-    """Raw data comes in 32-bit bmp format, with alpha channel all 255. Two images are
-    taken for each plate, one with red light from bottom and one with white light from
-    above along the top edge.
+    """Convert 24-bit or 32-bit BMP images to PNG with alpha channel.
 
-    We first save them as png files with better naming, then save a gray scale image
-    from the red light one.
+    Raw data comes as BMP images with either 3 or 4 channels. We ensure all saved
+    images have 4 channels (BGRA), with alpha set to 255 if missing.
 
-    Convert bmp images to png images.
+    Images are captured in pairs: red light (bottom) and white light (top).
+    This function separates them by index and saves both RGB and grayscale versions.
+
+    Args:
+        input_dir: Directory containing BMP images.
+        output_dir: Directory to save PNG images.
+        time_point: Optional time point label to append to filenames.
     """
     os.makedirs(output_dir, exist_ok=True)
-    for i, f in enumerate(tqdm(sorted(glob.glob(f"{input_dir}/*.bmp")))):
+    bmp_paths = sorted(glob.glob(f"{input_dir}/*.bmp"))
+
+    for i, f in enumerate(tqdm(bmp_paths)):
         barcode = os.path.splitext(os.path.basename(f))[0].split("_")[0]
         if time_point is not None:
             if time_point < 0:
                 raise ValueError("Time point should be a non-negative integer")
             barcode += f"_d{time_point}"
-        width, height = np.fromfile(f, dtype=np.uint32, offset=18, count=2)
-        image = np.fromfile(f, dtype=np.uint8, offset=54).reshape(height, width, 4)[
-            ::-1
-        ]
-        os.makedirs(os.path.join(output_dir, "white_rgb"), exist_ok=True)
-        os.makedirs(os.path.join(output_dir, "white_grayscale"), exist_ok=True)
-        os.makedirs(os.path.join(output_dir, "red_rgb"), exist_ok=True)
-        os.makedirs(os.path.join(output_dir, "red_grayscale"), exist_ok=True)
+
+        # Prepare subdirectories
+        for subdir in ("white_rgb", "white_grayscale", "red_rgb", "red_grayscale"):
+            os.makedirs(os.path.join(output_dir, subdir), exist_ok=True)
+
+        image = load_bmp_as_rgba(f)
         if i % 2:  # white light
             cv.imwrite(os.path.join(output_dir, "white_rgb", f"{barcode}.png"), image)
             cv.imwrite(
                 os.path.join(output_dir, "white_grayscale", f"{barcode}.png"),
-                cv.cvtColor(image, cv.COLOR_BGR2GRAY),
+                cv.cvtColor(image, cv.COLOR_BGRA2GRAY),
             )
         else:  # red light
             cv.imwrite(os.path.join(output_dir, "red_rgb", f"{barcode}.png"), image)
             cv.imwrite(
                 os.path.join(output_dir, "red_grayscale", f"{barcode}.png"),
-                cv.cvtColor(image, cv.COLOR_BGR2GRAY),
+                cv.cvtColor(image, cv.COLOR_BGRA2GRAY),
             )
-            # image_gray = cv.imread(
-            #     os.path.join(output_dir, f"{barcode}_rgb_red.png"), cv.IMREAD_GRAYSCALE
-            # )
 
 
 def _add_pca_arguments(parser: argparse.ArgumentParser) -> None:

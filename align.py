@@ -428,7 +428,7 @@ def _find_affine(
     weight,
     log,
     hparams: dict[str, float],
-    params_init: torch.Tensor = None,
+    params_init: torch.Tensor | None = None,
 ) -> PatienceLogger:
     # default hyperparameters
     # lr = 0.005

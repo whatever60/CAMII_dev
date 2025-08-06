@@ -22,17 +22,19 @@ from detector import CAMIIColonyDetector
 
 def detect_colony_batch(
     input_dir: str,
-    output_dir: str,
+    output_dir: str | None = None,
     calib_param_path: str = f"{os.path.dirname(__file__)}/test_data/parameters/calib_parameter.npz",
     config_path: str = f"{os.path.dirname(__file__)}/test_data/configs/configure.yaml",
     time_label: str = "max",
     toss_red: bool = False,
-) -> None:
+) -> list[tuple[pl.DataFrame, list[np.ndarray]]]:
     image_label_list, image_trans_list, image_epi_list = read_file_list(
         input_dir, int(time_label) if time_label.isdigit() else time_label
     )
     config = read_config(config_path)
-    os.makedirs(output_dir, exist_ok=True)
+    if output_dir is not None:
+        os.makedirs(output_dir, exist_ok=True)
+    ret = []
     for image_label, image_trans_path, image_epi_path in zip(
         image_label_list, image_trans_list, image_epi_list
     ):
@@ -60,7 +62,9 @@ def detect_colony_batch(
             cnt + np.array([config["crop_x_min"], config["crop_y_min"]])
             for cnt in contours
         ]
-
+        ret.append((df, contours))
+        if output_dir is None:
+            continue
         image_trans_pin = add_contours(
             image_trans_raw,
             contours,
@@ -84,6 +88,7 @@ def detect_colony_batch(
             image_epi_pin,
             output_dir,
         )
+    return ret
 
 
 def detect_colony_single(

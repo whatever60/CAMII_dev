@@ -30,10 +30,6 @@ from pycirclize.sector import Sector
 from pycirclize.tree import TreeViz
 
 
-# matplotlib.use("TkAgg")
-plt.rcParams["pdf.fonttype"] = 42
-
-
 ARROWSTYLE = "Simple, tail_width={}, head_width={}, head_length={}"
 
 
@@ -648,6 +644,9 @@ def read_isolate_interaction(
 
 
 if __name__ == "__main__":
+    plt.rcParams["pdf.fonttype"] = 42
+    plt.rcParams["svg.fonttype"] = "none"
+
     parser = argparse.ArgumentParser()
     parser.add_argument("-i", "--interaction", required=True, help="Interaction csv")
     parser.add_argument("-m", "--colony_metadata", default=None)

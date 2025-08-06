@@ -20,11 +20,15 @@ from utils import read_config, read_file_list, add_contours
 from detector import CAMIIColonyDetector
 
 
+DATA_DIR = f"{os.path.dirname(__file__)}/test_data"
+
+
 def detect_colony_batch(
     input_dir: str,
     output_dir: str | None = None,
-    calib_param_path: str = f"{os.path.dirname(__file__)}/test_data/parameters/calib_parameter.npz",
-    config_path: str = f"{os.path.dirname(__file__)}/test_data/configs/configure.yaml",
+    calib_param: str
+    | dict[str, np.ndarray] = f"{DATA_DIR}/parameters/calib_parameter.npz",
+    config_path: str = f"{DATA_DIR}/configs/configure.yaml",
     time_label: str = "max",
     toss_red: bool = False,
 ) -> list[tuple[pl.DataFrame, list[np.ndarray]]]:
@@ -40,9 +44,9 @@ def detect_colony_batch(
     ):
         image_trans_raw = cv.imread(image_trans_path, 0).astype(np.float32)
         image_epi_raw = cv.imread(image_epi_path, cv.IMREAD_COLOR).astype(np.float32)
-        # calib_param_path = None
+        # calib_param = None
         image_trans, image_epi = correct_image(
-            config, image_trans_raw, image_epi_raw, calib_param_path, toss_red
+            config, image_trans_raw, image_epi_raw, calib_param, toss_red
         )
         rprint("Detecting colonies for", image_label)
         contours = detect_colony(image_trans, config)
@@ -94,8 +98,8 @@ def detect_colony_batch(
 def detect_colony_single(
     input_path: str,
     output_dir: str,
-    calib_param_path: str | None = None,
-    config_path: str = f"{os.path.dirname(__file__)}/test_data/configs/configure.yaml",
+    calib_param: str | None = None,
+    config_path: str = f"{DATA_DIR}/configs/configure.yaml",
 ) -> None:
     """Colony detection for a single image follows the same logic as batch detection,
     except that correction is skipped.
@@ -123,7 +127,7 @@ def detect_colony_single(
     # image_trans = image_trans_raw_cropped.max() - image_trans_raw_cropped
     # image_trans = 255 - image_trans
     # image_trans, _ = correct_image(
-    #     config, image_trans_raw, None, calib_param_path=calib_param_path
+    #     config, image_trans_raw, None, calib_param=calib_param
     # )
     # if len(image_trans.shape) == 3:
     #     image_trans = cv.cvtColor(image_trans, cv.COLOR_BGR2GRAY)
@@ -139,7 +143,7 @@ def detect_colony_single(
         canny_upper_percentile=config["canny_upper_percentile"],
         clahe_clip_limit=config["clahe_clip_limit"],
         clahe_tile_grid_size=config["clahe_tile_grid_size"],
-        calib_param=calib_param_path,
+        calib_param=calib_param,
         calib_contrast_alpha=config["calib_contrast_alpha"],
         calib_contrast_beta=config["calib_contrast_beta"],
         crop_x_min=config["crop_x_min"],
@@ -181,14 +185,20 @@ def correct_image(
     config: dict,
     image_trans_raw: np.ndarray | None = None,
     image_epi_raw: np.ndarray | None = None,
-    calib_param_path: str | None = None,  # path to a npz file
+    calib_param: str | dict[str, np.ndarray] | None = None,  # path to a npz file
     toss_red: bool = False,
 ) -> tuple[np.ndarray | None, np.ndarray | None]:
     # load two images and calib data
-    if calib_param_path is None:
-        calib_param = {"image_trans_calib": np.array(1), "image_epi_calib": np.array(1)}
+    if calib_param is None:
+        _calib_param = {
+            "image_trans_calib": np.array(1),
+            "image_epi_calib": np.array(1),
+        }
+    elif isinstance(calib_param, dict):
+        _calib_param = calib_param
     else:
-        calib_param: dict[str, np.ndarray] = np.load(calib_param_path)
+        _calib_param = np.load(calib_param)
+    _calib_param: dict[str, np.ndarray]
 
     # crop images
     crop_x_min = config["crop_x_min"]
@@ -202,10 +212,10 @@ def correct_image(
         image_trans = crop(
             image_trans_raw, crop_x_min, crop_x_max, crop_y_min, crop_y_max
         )
-        if calib_param_path is None:
-            calib_param["image_trans_calib"] = np.ones_like(image_trans)
+        if calib_param is None:
+            _calib_param["image_trans_calib"] = np.ones_like(image_trans)
         image_dim = image_trans.shape[:2]
-        calib_dim = calib_param["image_trans_calib"].shape[:2]
+        calib_dim = _calib_param["image_trans_calib"].shape[:2]
         if image_dim != calib_dim:
             rprint(
                 "WARNING: Image dimension does not match calibration parameters."
@@ -214,7 +224,7 @@ def correct_image(
             image_trans = cv.resize(image_trans, calib_dim[::-1])
         image_trans_corr: np.ndarray = (
             image_trans
-            / calib_param["image_trans_calib"]
+            / _calib_param["image_trans_calib"]
             * config["calib_contrast_trans_alpha"]
             + config["calib_contrast_trans_beta"]
         )
@@ -223,17 +233,17 @@ def correct_image(
         image_epi_corr = None
     else:
         image_epi = crop(image_epi_raw, crop_x_min, crop_x_max, crop_y_min, crop_y_max)
-        if calib_param_path is None:
-            calib_param["image_epi_calib"] = np.ones_like(image_epi)
+        if calib_param is None:
+            _calib_param["image_epi_calib"] = np.ones_like(image_epi)
         image_dim = image_epi.shape[:2]
-        calib_dim = calib_param["image_epi_calib"].shape[:2]
+        calib_dim = _calib_param["image_epi_calib"].shape[:2]
         if image_dim != calib_dim:
             rprint(
                 "WARNING: Image dimension does not match calibration parameters."
                 f"Resizing image from {image_dim} to {calib_dim}."
             )
             image_epi = cv.resize(image_epi, calib_dim[::-1])
-        image_epi_corr: np.ndarray = image_epi / calib_param["image_epi_calib"]
+        image_epi_corr: np.ndarray = image_epi / _calib_param["image_epi_calib"]
         if toss_red:
             image_trans_corr: np.ndarray = cv.cvtColor(
                 image_epi.max() - image_epi, cv.COLOR_BGR2GRAY
@@ -670,7 +680,7 @@ def _calc_contour_channel_mean_std(
     contours: list[np.ndarray],
     image_gray: np.ndarray,
     image: np.ndarray,
-) -> dict[str, float]:
+) -> dict[str, np.ndarray]:
     """Calculate the mean and std of the pixels in the contour.
     We do this by selecting convex hull of each contour and summing up the pixels
         within. Mean is calculated by dividing the sum by how many pixels are in the
@@ -903,14 +913,14 @@ if __name__ == "__main__":
         "-b",
         "--calib_param_path",
         type=str,
-        default=f"{os.path.dirname(__file__)}/test_data/parameters/calib_parameter.npz",
+        default=f"{DATA_DIR}/parameters/calib_parameter.npz",
         help="Path to the calibration parameter file.",
     )
     parser.add_argument(
         "-c",
         "--config_path",
         type=str,
-        default=f"{os.path.dirname(__file__)}/test_data/configs/configure.yaml",
+        default=f"{DATA_DIR}/configs/configure.yaml",
         required=True,
         help="Path to the configuration file.",
     )
@@ -931,7 +941,7 @@ if __name__ == "__main__":
         detect_colony_single(
             args.input_path,
             args.output_dir,
-            calib_param_path=None,
+            calib_param=None,
             config_path=args.config_path,
         )
     else:
